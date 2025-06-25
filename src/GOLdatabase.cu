@@ -1,6 +1,6 @@
 /**나중에 printProgressBar 단계 나눠서 출력시키는 코드 추가시켜야 할듯. 약간 게임 로딩바처럼. */
 
-#include "database.hpp"
+#include "GOLdatabase.hpp"
 
 #define MAXGEN 2500
 namespace fs = std::filesystem;
