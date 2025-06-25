@@ -12,65 +12,6 @@ std::string getCurrentTimestamp()
     return oss.str();
 }
 
-// convolutionLayer 구현
-convolutionLayer::convolutionLayer(int iRow, int iCol, int fRow, int fCol,
-                                   int nFilter, double lr, InitType init)
-    : inRow(iRow), inCol(iCol), kRow(fRow), kCol(fCol), numFilter(nFilter),
-      outRow(iRow - fRow + 1), outCol(iCol - fCol + 1), learning_rate(lr),
-      input(iRow, iCol), bias(nFilter, 1),
-      flatOutput(nFilter * (iRow - fRow + 1) * (iCol - fCol + 1), 1)
-{
-    bias.fill(0.0);
-    kernels.reserve(numFilter);
-    outputs.reserve(numFilter);
-    for(int i=0;i<numFilter;i++){
-        kernels.emplace_back(kRow, kCol);
-        kernels[i] = InitWeight<double>(kRow, kCol, init);
-        outputs.emplace_back(outRow, outCol);
-    }
-}
-
-void convolutionLayer::feedforward(const d_matrix<double>& raw_input)
-{
-    input = raw_input;
-    for(int f=0; f<numFilter; ++f){
-        outputs[f] = convolute(input, kernels[f]);
-        outputs[f] = ScalaPlus(outputs[f], bias(f,0));
-    }
-
-    int idx = 0;
-    for(int f=0; f<numFilter; ++f){
-        for(int r=0; r<outRow; ++r){
-            for(int c=0; c<outCol; ++c){
-                flatOutput(idx++,0) = outputs[f](r,c);
-            }
-        }
-    }
-    flatOutput.cpyToDev();
-}
-
-void convolutionLayer::backprop(const d_matrix<double>& delta_flat)
-{
-    int idx = 0;
-    for(int f=0; f<numFilter; ++f){
-        d_matrix<double> d_out(outRow, outCol);
-        for(int r=0; r<outRow; ++r){
-            for(int c=0; c<outCol; ++c){
-                d_out(r,c) = delta_flat(idx++,0);
-            }
-        }
-
-        d_matrix<double> grad_k = convolute(input, d_out);
-        kernels[f] = matrixPlus(kernels[f], ScalaProduct(grad_k, -learning_rate));
-        double b_grad = plusAllElements(d_out);
-        bias(f,0) -= learning_rate * b_grad;
-    }
-}
-
-d_matrix<double>& convolutionLayer::getOutput()
-{
-    return flatOutput;
-}
 
 // 가중치 파일에서 weight, bias 불러오기
 void perceptronLayer::loadWeight(const std::string &path)
