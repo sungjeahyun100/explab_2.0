@@ -302,11 +302,7 @@ void Adam::backprop(perceptronLayer* next, const d_matrix<double>& external_delt
         this->bias,
         ScalaProduct(HadamardProduct(m_B_hat, invDenB), -this->learning_rate)
     );
-
-    // 7) 디바이스 메모리에 복사
-    this->updateWeightInDev();
     cudaDeviceSynchronize();
-
 }
 
 SGD::~SGD(){}

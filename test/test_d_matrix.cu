@@ -23,6 +23,9 @@ int main() {
     auto A_t = A.transpose();
     auto N_t = N.transpose();
 
+    // HP test
+    auto A_hp = HadamardProduct<double>(A, A_t);
+
     //tiled test
     auto C = matrixMP<double>(A, B);
     auto D = matrixMP<double>(B, N);
@@ -57,6 +60,8 @@ int main() {
     C.printMatrix();
     std::cout << "B*N 행렬곱 결과:" << std::endl;
     D.printMatrix();
+    std::cout << "A HP A_t 결과:" << std::endl;
+    A_hp.printMatrix();
 
     // 5) vector에 push_back
     test_v.push_back(A);
