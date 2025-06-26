@@ -242,7 +242,7 @@ public:
         transposed.cpyToHost();
         return transposed;
     }
-    
+
     // printMatrix: 디바이스 데이터를 호스트로 복사한 후 행렬을 출력합니다.
     void printMatrix() const {
         std::vector<T> host_data(rowSize * colSize);
@@ -271,6 +271,9 @@ namespace std {
         }
     };
 }
+
+template<typename T, int TILE>
+__global__ void matmul_tiled(const T* __restrict__ A, const T* __restrict__ B, T* __restrict__ C, int M, int N, int K);
 
 // English: Overloads the stream insertion operator for printing a d_matrix object.
 // 한글: d_matrix 객체를 출력하기 위한 스트림 삽입 연산자를 오버로드합니다.
