@@ -594,7 +594,6 @@ template d_matrix<double> MatrixActivate<double, d_sigmoid<double>>(const d_matr
 template d_matrix<double> MatrixActivate<double, d_I<double>>(const d_matrix<double>&);
 template d_matrix<double> MatrixActivate<double, Tanh<double>>(const d_matrix<double>&);
 template d_matrix<double> MatrixActivate<double, d_tanh<double>>(const d_matrix<double>&);
-
 template d_matrix<double> MatrixActivate<double, ELU<double>>(const d_matrix<double>&);
 template d_matrix<double> MatrixActivate<double, d_ELU<double>>(const d_matrix<double>&);
 template d_matrix<double> MatrixActivate<double, SELU<double>>(const d_matrix<double>&);
@@ -604,7 +603,6 @@ template d_matrix<double> MatrixActivate<double, d_Swish<double>>(const d_matrix
 template d_matrix<double> MatrixActivate<double, Softsign<double>>(const d_matrix<double>&);
 template d_matrix<double> MatrixActivate<double, d_Softsign<double>>(const d_matrix<double>&);
 template d_matrix<double> MatrixActivate<double, Softplus<double>>(const d_matrix<double>&);
-
 template d_matrix<double> MatrixActivate<double, sqr<double>>(const d_matrix<double>&);
 template d_matrix<double> MatrixActivate<double, devide<double>>(const d_matrix<double>&);
 template d_matrix<double> MatrixActivate<double, Log<double>>(const d_matrix<double>&);
@@ -630,7 +628,6 @@ template __global__ void ActivateInKernel<double, d_sigmoid<double>>(double*, do
 template __global__ void ActivateInKernel<double, d_I<double>>(double*, double*, int, int);
 template __global__ void ActivateInKernel<double, Tanh<double>>(double*, double*, int, int);
 template __global__ void ActivateInKernel<double, d_tanh<double>>(double*, double*, int, int);
-
 template __global__ void ActivateInKernel<double, ELU<double>>(double*, double*, int, int);
 template __global__ void ActivateInKernel<double, d_ELU<double>>(double*, double*, int, int);
 template __global__ void ActivateInKernel<double, SELU<double>>(double*, double*, int, int);
@@ -640,7 +637,6 @@ template __global__ void ActivateInKernel<double, d_Swish<double>>(double*, doub
 template __global__ void ActivateInKernel<double, Softsign<double>>(double*, double*, int, int);
 template __global__ void ActivateInKernel<double, d_Softsign<double>>(double*, double*, int, int);
 template __global__ void ActivateInKernel<double, Softplus<double>>(double*, double*, int, int);
-
 template __global__ void ActivateInKernel<double, sqr<double>>(double*, double*, int, int);
 template __global__ void ActivateInKernel<double, devide<double>>(double*, double*, int, int);
 template __global__ void ActivateInKernel<double, Log<double>>(double*, double*, int, int);

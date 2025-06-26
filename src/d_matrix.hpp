@@ -101,7 +101,7 @@ public:
         rowSize = static_cast<int>(list2d.size());
         colSize = rowSize > 0 ? static_cast<int>(list2d.begin()->size()) : 0;
         if (rowSize <= 0 || colSize <= 0) {
-          std::cerr << "[ERROR] Invalid init2d dimensions: "
+          std::cerr << "[ERROR] Invalid list2d dimensions: "
                     << rowSize << "x" << colSize << std::endl;
           exit(1);
         }
@@ -114,9 +114,9 @@ public:
     
         // 4) 값 복사
         int idx = 0;
-        for (auto& row : init2d) {
+        for (auto& row : list2d) {
           if (static_cast<int>(row.size()) != colSize) {
-            std::cerr << "[ERROR] Inconsistent column size in init2d\n";
+            std::cerr << "[ERROR] Inconsistent column size in list2d\n";
             exit(1);
           }
           for (auto& v : row) {
@@ -161,6 +161,19 @@ public:
         return *this;
     }
 
+    bool operator==(const d_matrix<T>& other) const {
+        if(other.colSize != colSize || other.rowSize != rowSize) return false;
+        int idx = rowSize*colSize;
+        for(int i = 0; i < idx; i++){
+            if(this->h_data[i] != other.h_data[i]) return false;
+        }
+        return true;
+    }
+
+    bool operator!=(d_matrix const& other) const {
+        return !(*this == other);
+    }
+
     // 소멸자: 할당된 메모리를 해제합니다.
     ~d_matrix() {
         delete[] h_data;
@@ -184,20 +197,6 @@ public:
     // cpyToHost: 디바이스 데이터를 호스트 메모리로 복사합니다.
     void cpyToHost() {
         CHECK_CUDA_ERROR(cudaMemcpy(h_data, d_data, rowSize * colSize * sizeof(T), cudaMemcpyDeviceToHost));
-    }
-
-    // printMatrix: 디바이스 데이터를 호스트로 복사한 후 행렬을 출력합니다.
-    void printMatrix() {
-        std::vector<T> host_data(rowSize * colSize);
-        CHECK_CUDA_ERROR(cudaMemcpy(host_data.data(), d_data, rowSize * colSize * sizeof(T), cudaMemcpyDeviceToHost));
-
-        std::cout << "행렬 출력:" << std::endl;
-        for (int i = 0; i < rowSize; i++) {
-            for (int j = 0; j < colSize; j++) {
-                std::cout << std::setw(4) << host_data[i * colSize + j];
-            }
-            std::cout << std::endl;
-        }
     }
 
     // operator() 오버로드: 2차원 인덱스로 호스트 데이터를 접근합니다.
@@ -227,6 +226,12 @@ public:
         }
         cpyToDev();
     }
+
+    T*       begin()       noexcept { return h_data; }
+    T*       end()         noexcept { return h_data + rowSize*colSize; }
+    T const* begin() const noexcept { return h_data; }
+    T const* end()   const noexcept { return h_data + rowSize*colSize; }
+
     // Transpose the matrix and return a new transposed matrix
     d_matrix<T> transpose() const {
         d_matrix<T> transposed(colSize, rowSize);
@@ -237,8 +242,35 @@ public:
         transposed.cpyToHost();
         return transposed;
     }
+    
+    // printMatrix: 디바이스 데이터를 호스트로 복사한 후 행렬을 출력합니다.
+    void printMatrix() const {
+        std::vector<T> host_data(rowSize * colSize);
+        CHECK_CUDA_ERROR(cudaMemcpy(host_data.data(), d_data, rowSize * colSize * sizeof(T), cudaMemcpyDeviceToHost));
+
+        std::cout << "행렬 출력:" << std::endl;
+        for (int i = 0; i < rowSize; i++) {
+            for (int j = 0; j < colSize; j++) {
+                std::cout << std::setw(4) << host_data[i * colSize + j];
+            }
+            std::cout << std::endl;
+        }
+    }
 };
 
+#include <functional>
+namespace std {
+    template<typename T>
+    struct hash<d_matrix<T>> {
+        size_t operator()(d_matrix<T> const& m) const noexcept {
+            size_t h = m.getRow() ^ (m.getCol() << 1);
+            for (auto& val : m) {
+                h ^= std::hash<T>{}(val) + 0x9e3779b97f4a7c15 + (h<<6) + (h>>2);
+            }
+            return h;
+        }
+    };
+}
 
 // English: Overloads the stream insertion operator for printing a d_matrix object.
 // 한글: d_matrix 객체를 출력하기 위한 스트림 삽입 연산자를 오버로드합니다.
