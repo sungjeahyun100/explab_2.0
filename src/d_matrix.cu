@@ -37,6 +37,56 @@ __global__ void TransInKernel(T* d_A, T* d_C, int row, int col) {
     }
 }
 
+template<typename T, int TILE>
+__global__ void matmul_tiled(const T* __restrict__ A,
+                             const T* __restrict__ B,
+                                   T* __restrict__ C,
+                             int M, int N, int K) {
+    // MxK * KxN = MxN
+    // 블록 내 스레드 좌표
+    int tx = threadIdx.x;
+    int ty = threadIdx.y;
+
+    // 전역 행·열 인덱스
+    int row = blockIdx.y * TILE + ty;
+    int col = blockIdx.x * TILE + tx;
+
+    // Shared memory 공간 선언
+    __shared__ T sA[TILE][TILE];
+    __shared__ T sB[TILE][TILE];
+
+    // 누적값 레지스터
+    T sum = 0;
+
+    // K 방향으로 타일 순회
+    for (int t = 0; t < (K + TILE - 1) / TILE; ++t) {
+        int A_col = t * TILE + tx;
+        int B_row = t * TILE + ty;
+
+        // 경계 검사 후 Shared 메모리에 로드
+        sA[ty][tx] = (row < M && A_col < K)
+                    ? A[row * K + A_col]
+                    : T(0);
+        sB[ty][tx] = (B_row < K && col < N)
+                    ? B[B_row * N + col]
+                    : T(0);
+
+        __syncthreads();
+
+        // 타일 내부 곱-누산
+        #pragma unroll
+        for (int k = 0; k < TILE; ++k) {
+            sum += sA[ty][k] * sB[k][tx];
+        }
+        __syncthreads();
+    }
+
+    // 결과 쓰기
+    if (row < M && col < N) {
+        C[row * N + col] = sum;
+    }
+}
+
 template<typename T>
 __global__ void HPinKernel(T* d_A, T* d_B, T* d_C, int row, int col) {
     int x = blockIdx.x * blockDim.x + threadIdx.x;
@@ -105,21 +155,26 @@ __global__ void MPinKernel(T* d_A, T* d_B, T* d_C, int row, int col, int eq) {
     }
 }
 
+constexpr int TILE = 32;
+
 template<typename T>
-d_matrix<T> matrixMP(const d_matrix<T>& d_A, const d_matrix<T>& d_B) {
-    int row = d_A.getRow();
-    int col = d_B.getCol();
-    int eq = d_A.getCol(); // 두 행렬의 공통 차원 (A의 col == B의 row)
+d_matrix<T> matrixMP(const d_matrix<T>& A, const d_matrix<T>& B) {
+    int M = A.getRow();
+    int N = B.getCol();
+    int K = A.getCol();  // A.cols == B.rows
 
-    d_matrix<T> C(row, col);
+    // 결과 행렬
+    d_matrix<T> C(M, N);
 
-    dim3 blockSize(32, 32);
-    dim3 gridSize((row + blockSize.x - 1) / blockSize.x, (col + blockSize.y - 1) / blockSize.y);
+    dim3 block(TILE, TILE);
+    dim3 grid((N + TILE - 1) / TILE, (M + TILE - 1) / TILE);
 
-    MPinKernel<<<gridSize, blockSize>>>(d_A.getDevPointer(), d_B.getDevPointer(), C.getDevPointer(), row, col, eq);
+    // Tiled matmul 커널 호출
+    matmul_tiled<T, TILE><<<grid, block>>>(A.getDevPointer(), B.getDevPointer(), C.getDevPointer(), M, N, K);
     cudaDeviceSynchronize();
+
+    // 호스트로 복사
     C.cpyToHost();
-    
     return C;
 }
 
@@ -646,6 +701,7 @@ template __global__ void softmaxKernel<double>(double*, double*, int, int);
 template __global__ void convertInKernel<double>(double*, int, int);
 template __global__ void convoluteInKernel<double>(double* __restrict__, double* __restrict__, double* __restrict__, int, int, int, int, int, int, int);
 template __global__ void InitWeightInKernel<double>(double*, curandState*, int, int, InitType);
+template __global__ void matmul_tiled<double, TILE>(const double* __restrict__, const double* __restrict__, double* __restrict__, int, int, int);
 
 
 

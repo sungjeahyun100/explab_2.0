@@ -30,36 +30,30 @@ enum class LossType {
 class Optimizer {
 public:
     virtual ~Optimizer() = default;
-    virtual void update(d_matrix<double>& W,
-                        d_matrix<double>& B,
-                        const d_matrix<double>& gW,
-                        const d_matrix<double>& gB) = 0;
+    virtual void update(d_matrix<double>& W, d_matrix<double>& B, const d_matrix<double>& gW, const d_matrix<double>& gB) = 0;
 };
 
-class SGDOptimizer : public Optimizer {
+class SGD : public Optimizer {
     double lr;
 public:
-    explicit SGDOptimizer(double lr_) : lr(lr_) {}
-    void update(d_matrix<double>& W, d_matrix<double>& B,
-                const d_matrix<double>& gW, const d_matrix<double>& gB) override {
+    explicit SGD(double lr_) : lr(lr_) {}
+    void update(d_matrix<double>& W, d_matrix<double>& B, const d_matrix<double>& gW, const d_matrix<double>& gB) override {
         W = matrixPlus(W, ScalaProduct(gW, -lr));
         B = matrixPlus(B, ScalaProduct(gB, -lr));
     }
 };
 
-class AdamOptimizer : public Optimizer {
+class Adam : public Optimizer {
     double lr, beta1, beta2, eps;
     int t;
     d_matrix<double> mW, vW, mB, vB;
 public:
-    AdamOptimizer(int row, int col, double lr_,
-                  double b1=0.9, double b2=0.999, double e=1e-8)
+    Adam(int row, int col, double lr_, double b1=0.9, double b2=0.999, double e=1e-8)
         : lr(lr_), beta1(b1), beta2(b2), eps(e), t(0),
           mW(row, col), vW(row, col), mB(row,1), vB(row,1) {
         mW.fill(0.0); vW.fill(0.0); mB.fill(0.0); vB.fill(0.0);
     }
-    void update(d_matrix<double>& W, d_matrix<double>& B,
-                const d_matrix<double>& gW, const d_matrix<double>& gB) override {
+    void update(d_matrix<double>& W, d_matrix<double>& B, const d_matrix<double>& gW, const d_matrix<double>& gB) override {
         t++;
         mW = matrixPlus(ScalaProduct(mW,beta1), ScalaProduct(gW,1.0-beta1));
         vW = matrixPlus(ScalaProduct(vW,beta2), ScalaProduct(HadamardProduct(gW,gW),1.0-beta2));
@@ -112,9 +106,7 @@ public:
         output = matrixPlus(matrixMP(weight, input), bias);
     }
 
-    void calcGrad(PerceptronLayer* next,
-                  const d_matrix<double>& ext_delta,
-                  const d_matrix<double>& act_deriv) {
+    void calcGrad(PerceptronLayer* next, const d_matrix<double>& ext_delta, const d_matrix<double>& act_deriv) {
         d_matrix<double> grad_input = ext_delta;
         if(next != nullptr) {
             auto wd = matrixMP(next->weight.transpose(), next->delta);
@@ -126,9 +118,7 @@ public:
         gradB = delta;
     }
 
-    void backprop(PerceptronLayer* next,
-                  const d_matrix<double>& ext_delta,
-                  const d_matrix<double>& act_deriv) {
+    void backprop(PerceptronLayer* next, const d_matrix<double>& ext_delta, const d_matrix<double>& act_deriv) {
         calcGrad(next, ext_delta, act_deriv);
         opt->update(weight, bias, gradW, gradB);
         weight.cpyToDev();
@@ -260,4 +250,4 @@ public:
     d_matrix<double>& getOutput(){ return output; }
 };
 
-#endif // PERCEPTRON_VER2_HPP
+#endif
