@@ -445,7 +445,7 @@ d_matrix<T> convertZeroToEpsilon(d_matrix<T> x){
 }
 
 template<typename T>
-__global__ void convoluteInKernel(T* d_A, T* d_B, T* d_C, int inputRow, int inputCol, int filterRow, int filterCol, int outputRow, int outputCol) {
+__global__ void convoluteInKernel(T* __restrict__ d_A, T* __restrict__ d_B, T* __restrict__ d_C, int inputRow, int inputCol, int filterRow, int filterCol, int outputRow, int outputCol, int stride) {
     int idx_x = blockDim.x * blockIdx.x + threadIdx.x; // Output row index
     int idx_y = blockDim.y * blockIdx.y + threadIdx.y; // Output col index
 
@@ -453,8 +453,8 @@ __global__ void convoluteInKernel(T* d_A, T* d_B, T* d_C, int inputRow, int inpu
         T sum = 0;
         for (int i = 0; i < filterRow; i++) {
             for (int j = 0; j < filterCol; j++) {
-                int input_x = idx_x + i;
-                int input_y = idx_y + j;
+                int input_x = idx_x*stride + i;
+                int input_y = idx_y*stride + j;
                 if (input_x < inputRow && input_y < inputCol) {
                     sum += d_A[input_x * inputCol + input_y] * d_B[i * filterCol + j];
                 }
@@ -465,15 +465,15 @@ __global__ void convoluteInKernel(T* d_A, T* d_B, T* d_C, int inputRow, int inpu
 }
 
 template<typename T>
-d_matrix<T> convolute(const d_matrix<T>& d_A, const d_matrix<T>& d_B) {
+d_matrix<T> convolute(const d_matrix<T>& d_A, const d_matrix<T>& d_B, int stride) {
     int inputRow = d_A.getRow();
     int inputCol = d_A.getCol();
     int filterRow = d_B.getRow();
     int filterCol = d_B.getCol();
 
     // Calculate output dimensions
-    int outputRow = inputRow - filterRow + 1;
-    int outputCol = inputCol - filterCol + 1;
+    int outputRow = ((inputRow - filterRow)/stride) + 1;
+    int outputCol = ((inputCol - filterCol)/stride) + 1;
 
     // Initialize output matrix
     d_matrix<T> C(outputRow, outputCol);
@@ -483,7 +483,7 @@ d_matrix<T> convolute(const d_matrix<T>& d_A, const d_matrix<T>& d_B) {
     dim3 gridSize((outputRow + blockSize.x - 1) / blockSize.x, (outputCol + blockSize.y - 1) / blockSize.y);
 
     // Launch CUDA kernel
-    convoluteInKernel<<<gridSize, blockSize>>>(d_A.getDevPointer(), d_B.getDevPointer(), C.getDevPointer(), inputRow, inputCol, filterRow, filterCol, outputRow, outputCol);
+    convoluteInKernel<<<gridSize, blockSize>>>(d_A.getDevPointer(), d_B.getDevPointer(), C.getDevPointer(), inputRow, inputCol, filterRow, filterCol, outputRow, outputCol, stride);
     cudaDeviceSynchronize();
     C.cpyToHost();
 
@@ -594,7 +594,6 @@ template d_matrix<double> MatrixActivate<double, d_sigmoid<double>>(const d_matr
 template d_matrix<double> MatrixActivate<double, d_I<double>>(const d_matrix<double>&);
 template d_matrix<double> MatrixActivate<double, Tanh<double>>(const d_matrix<double>&);
 template d_matrix<double> MatrixActivate<double, d_tanh<double>>(const d_matrix<double>&);
-
 template d_matrix<double> MatrixActivate<double, ELU<double>>(const d_matrix<double>&);
 template d_matrix<double> MatrixActivate<double, d_ELU<double>>(const d_matrix<double>&);
 template d_matrix<double> MatrixActivate<double, SELU<double>>(const d_matrix<double>&);
@@ -604,7 +603,6 @@ template d_matrix<double> MatrixActivate<double, d_Swish<double>>(const d_matrix
 template d_matrix<double> MatrixActivate<double, Softsign<double>>(const d_matrix<double>&);
 template d_matrix<double> MatrixActivate<double, d_Softsign<double>>(const d_matrix<double>&);
 template d_matrix<double> MatrixActivate<double, Softplus<double>>(const d_matrix<double>&);
-
 template d_matrix<double> MatrixActivate<double, sqr<double>>(const d_matrix<double>&);
 template d_matrix<double> MatrixActivate<double, devide<double>>(const d_matrix<double>&);
 template d_matrix<double> MatrixActivate<double, Log<double>>(const d_matrix<double>&);
@@ -613,7 +611,7 @@ template d_matrix<double> ScalaPlus(const d_matrix<double>&, double);
 template d_matrix<double> castToDoubleGPU(const d_matrix<double>&);
 template d_matrix<double> softmax(const d_matrix<double>&);
 template d_matrix<double> convertZeroToEpsilon(d_matrix<double>);
-template d_matrix<double> convolute(const d_matrix<double>&, const d_matrix<double>&);
+template d_matrix<double> convolute(const d_matrix<double>&, const d_matrix<double>&, int);
 template d_matrix<double> InitWeight(int, int, InitType);
 template __global__ void TransInKernel<double>(double*, double*, int, int);
 template __global__ void HPinKernel<double>(double*, double*, double*, int, int);
@@ -630,7 +628,6 @@ template __global__ void ActivateInKernel<double, d_sigmoid<double>>(double*, do
 template __global__ void ActivateInKernel<double, d_I<double>>(double*, double*, int, int);
 template __global__ void ActivateInKernel<double, Tanh<double>>(double*, double*, int, int);
 template __global__ void ActivateInKernel<double, d_tanh<double>>(double*, double*, int, int);
-
 template __global__ void ActivateInKernel<double, ELU<double>>(double*, double*, int, int);
 template __global__ void ActivateInKernel<double, d_ELU<double>>(double*, double*, int, int);
 template __global__ void ActivateInKernel<double, SELU<double>>(double*, double*, int, int);
@@ -640,7 +637,6 @@ template __global__ void ActivateInKernel<double, d_Swish<double>>(double*, doub
 template __global__ void ActivateInKernel<double, Softsign<double>>(double*, double*, int, int);
 template __global__ void ActivateInKernel<double, d_Softsign<double>>(double*, double*, int, int);
 template __global__ void ActivateInKernel<double, Softplus<double>>(double*, double*, int, int);
-
 template __global__ void ActivateInKernel<double, sqr<double>>(double*, double*, int, int);
 template __global__ void ActivateInKernel<double, devide<double>>(double*, double*, int, int);
 template __global__ void ActivateInKernel<double, Log<double>>(double*, double*, int, int);
@@ -648,7 +644,7 @@ template __global__ void plusScalaToMatrix<double>(double*, int, int, double);
 template __global__ void castKernel<double>(const double*, double*, int);
 template __global__ void softmaxKernel<double>(double*, double*, int, int);
 template __global__ void convertInKernel<double>(double*, int, int);
-template __global__ void convoluteInKernel<double>(double*, double*, double*, int, int, int, int, int, int);
+template __global__ void convoluteInKernel<double>(double* __restrict__, double* __restrict__, double* __restrict__, int, int, int, int, int, int, int);
 template __global__ void InitWeightInKernel<double>(double*, curandState*, int, int, InitType);
 
 

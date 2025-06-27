@@ -114,7 +114,7 @@ public:
     
         // 4) 값 복사
         int idx = 0;
-        for (auto& row : init2d) {
+        for (auto& row : list2d) {
           if (static_cast<int>(row.size()) != colSize) {
             std::cerr << "[ERROR] Inconsistent column size in init2d\n";
             exit(1);
@@ -420,7 +420,7 @@ __global__ void convoluteInKernel(T* d_A, T* d_B, T* d_C, int inputRow, int inpu
 // English: Performs convolution on a matrix using GPU computation.
 // 한글: GPU 연산을 사용하여 행렬에 합성곱 연산을 수행합니다.
 template<typename T>
-d_matrix<T> convolute(const d_matrix<T>& d_A, const d_matrix<T>& d_B);
+d_matrix<T> convolute(const d_matrix<T>& d_A, const d_matrix<T>& d_B, int stride);
 
 
 // English: CUDA kernel for initializing CURAND states on the GPU.

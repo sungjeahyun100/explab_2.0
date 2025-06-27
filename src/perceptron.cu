@@ -84,12 +84,10 @@ void perceptronLayer::calculateGrad(perceptronLayer* next, const d_matrix<double
 
     if (next != nullptr) {
         d_matrix<double> weighted_delta = matrixMP(next->weight.transpose(), next->delta);
-        weighted_delta.cpyToDev();
         grad_input = weighted_delta;
     }
 
     delta = HadamardProduct(grad_input, act_deriv);
-    delta.cpyToDev();
 
     Gt_W = matrixMP<double>(delta, input.transpose());
     Gt_B = delta;
@@ -346,31 +344,23 @@ loss.pushOutput(act2.getOutput());
 d_matrix<double> grad = loss.getGrad();
 output_layer.backprop(nullptr, grad, act2.d_Active(output_layer.getOutput()));
 input_layer.backprop(&output_layer, output_layer.delta, act1.d_Active(input_layer.getOutput()));
-
-[MLP(다층 퍼셉트론) 구성 예시 - Adam 사용]
-
-// 1. 계층 선언 (입력, 은닉, 출력)
-Adam input_layer(입크기, 은닉크기, lr, InitType::He);
-ActivateLayer act1(은닉크기, 1, ActivationType::ReLU);
-Adam output_layer(은닉크기, 출력크기, lr, InitType::He);
-ActivateLayer act2(출력크기, 1, ActivationType::Sigmoid); // 또는 Softmax
-LossLayer loss(출력크기, 1, LossType::CrossEntropy);
-
-// 2. 순전파 예시
-input_layer.feedforward(input); // 첫 계층
-act1.pushInput(input_layer.getOutput());
-act1.Active();
-output_layer.feedforward(act1.getOutput());
-act2.pushInput(output_layer.getOutput());
-act2.Active();
-
-// 3. 역전파 예시
-loss.pushTarget(target);
-loss.pushOutput(act2.getOutput());
-d_matrix<double> grad = loss.getGrad();
-output_layer.backprop(nullptr, grad, act2.d_Active(output_layer.getOutput()));
-input_layer.backprop(&output_layer, output_layer.delta, act1.d_Active(input_layer.getOutput()));
 */
 
+convolutionLayer::convolutionLayer(int inputRow, int inputCol, int kernelRow, int kernelCol, int stride, InitType type) : input(inputRow, inputCol), 
+                                                                                                           kernel(kernelRow, kernelCol), 
+                                                                                                           stride(stride), 
+                                                                                                           output(((inputRow-kernelRow)/stride)+1, ((inputCol-kernelCol)/stride)+1), 
+                                                                                                           bias(((inputRow-kernelRow)/stride)+1, ((inputCol-kernelCol)/stride)+1),
+                                                                                                           delta(((inputRow-kernelRow)/stride)+1, ((inputCol-kernelCol)/stride)+1),
+                                                                                                           Gt_k(kernelRow, kernelCol),
+                                                                                                           Gt_b(1, 1),
+                                                                                                           Gt_I(inputRow, inputCol)
+{
+    kernel = InitWeight<double>(kernelRow, kernelCol, type);
+    bias.fill(0.01l);
+}
 
-
+void convolutionLayer::feedforward()
+{
+    output = matrixPlus(convolute(input, kernel, stride), bias);
+}

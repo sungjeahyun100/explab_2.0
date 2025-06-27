@@ -32,8 +32,23 @@ enum class LossType{
     CrossEntropy
 };
 
- 
 inline std::string getCurrentTimestamp();
+
+class convolutionLayer{
+    private:
+        d_matrix<double> input;
+        d_matrix<double> kernel, bias;
+        d_matrix<double> output;
+        d_matrix<double> delta;
+        d_matrix<double> Gt_k, Gt_b, Gt_I;
+        int stride;
+    public:
+        convolutionLayer(int inputRow, int inputCol, int kernelRow, int kernelCol, int stride, InitType type);
+        void pushInput(d_matrix<double>& in){ input = in; }
+        void feedforward();
+        d_matrix<double>& getOutput() { return output; }
+
+};
 
 class perceptronLayer {
     protected:
