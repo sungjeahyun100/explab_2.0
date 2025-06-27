@@ -101,7 +101,7 @@ public:
         rowSize = static_cast<int>(list2d.size());
         colSize = rowSize > 0 ? static_cast<int>(list2d.begin()->size()) : 0;
         if (rowSize <= 0 || colSize <= 0) {
-          std::cerr << "[ERROR] Invalid init2d dimensions: "
+          std::cerr << "[ERROR] Invalid list2d dimensions: "
                     << rowSize << "x" << colSize << std::endl;
           exit(1);
         }
@@ -114,9 +114,9 @@ public:
     
         // 4) 값 복사
         int idx = 0;
-        for (auto& row : init2d) {
+        for (auto& row : list2d) {
           if (static_cast<int>(row.size()) != colSize) {
-            std::cerr << "[ERROR] Inconsistent column size in init2d\n";
+            std::cerr << "[ERROR] Inconsistent column size in list2d\n";
             exit(1);
           }
           for (auto& v : row) {
