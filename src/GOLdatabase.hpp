@@ -60,5 +60,3 @@ void generateGameOfLifeData(int filenum, double ratio);
 std::vector<std::pair<d_matrix<double>, d_matrix<double>>> LoadingData();
 
 d_matrix<int> simulateAndLabelingtopattern(const d_matrix<int>& initialPattern, int fileId);
-
-void printProgressBar(int current, int total, std::chrono::steady_clock::time_point startTime, std::string processname);

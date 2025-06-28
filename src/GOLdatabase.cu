@@ -1,6 +1,7 @@
 /**나중에 printProgressBar 단계 나눠서 출력시키는 코드 추가시켜야 할듯. 약간 게임 로딩바처럼. */
 
 #include "GOLdatabase.hpp"
+#include "utility.hpp"
 
 #define MAXGEN 2500
 namespace fs = std::filesystem;
@@ -98,27 +99,6 @@ d_matrix<int> generateFixedRatioPatternWithPadding(int fullHeight, int fullWidth
     return board;
 }
 
-
-
-void printProgressBar(int current, int total, std::chrono::steady_clock::time_point startTime, std::string processname) {
-    int width = 50;
-    float progress = static_cast<float>(current) / total;
-    int pos = static_cast<int>(width * progress);
-    
-    auto elapsed = std::chrono::steady_clock::now() - startTime;
-    int elapsedSec = std::chrono::duration_cast<std::chrono::seconds>(elapsed).count();
-
-    std::cout << "[";
-    for (int i = 0; i < width; ++i) {
-        if (i < pos) std::cout << "=";
-        else if (i == pos) std::cout << ">";
-        else std::cout << " ";
-    }
-    std::cout << "] " << int(progress * 100.0) << "% ";
-    std::cout << '[' << processname << ']';
-    std::cout << "(경과 시간: " << elapsedSec << " 초)\r";
-    std::cout.flush();
-}
 
 __global__ void countAliveKernel(int* mat, int* partialSums, int totalSize) {
     int tid = blockIdx.x * blockDim.x + threadIdx.x;

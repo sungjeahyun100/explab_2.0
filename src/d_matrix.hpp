@@ -97,7 +97,7 @@ public:
         CHECK_CUDA_ERROR(cudaMemcpy(d_data, other.d_data, rowSize * colSize * sizeof(T), cudaMemcpyDeviceToDevice));
     }
 
-        d_matrix(std::initializer_list<std::initializer_list<T>> list2d){
+    d_matrix(std::initializer_list<std::initializer_list<T>> list2d){
         rowSize = static_cast<int>(list2d.size());
         colSize = rowSize > 0 ? static_cast<int>(list2d.begin()->size()) : 0;
         if (rowSize <= 0 || colSize <= 0) {
@@ -124,23 +124,6 @@ public:
           }
         }
         // 5) 호스트 → 디바이스 복사
-        CHECK_CUDA_ERROR(cudaMemcpy(d_data, h_data, bytes, cudaMemcpyHostToDevice));
-    }
-    
-    d_matrix(std::initializer_list<T> list) : rowSize(1), colSize(static_cast<int>(list.size())){
-        int N = rowSize * colSize;
-        // 호스트 메모리 할당
-        h_data = new T[N];
-        // 디바이스 메모리 할당
-        size_t bytes = N * sizeof(T);
-        CHECK_CUDA_ERROR(cudaMalloc(&d_data, bytes));
-    
-        // 값 복사
-        int i = 0;
-        for (auto& v : list) {
-          h_data[i++] = v;
-        }
-        // 호스트 → 디바이스
         CHECK_CUDA_ERROR(cudaMemcpy(d_data, h_data, bytes, cudaMemcpyHostToDevice));
     }
 
