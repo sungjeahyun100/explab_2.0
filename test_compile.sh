@@ -19,13 +19,3 @@ nvcc -std=c++20 \
     -Xcompiler="-pthread" 
 echo "✅ build/testCon 빌드 완료"
 
-#nvcc -std=c++20\
-#    -I "$PROJECT_ROOT/src" \
-#    "$PROJECT_ROOT/test/test_d_matrix.cu" \
-#    "$PROJECT_ROOT/src/d_matrix.cu" \
-#    -o "$BUILD_DIR/test_d_matrix" \
-#    -lcurl \
-#    -lcurand \
-#    -Xcompiler="-pthread"
-#echo "build/test_d_matrix 빌드 완료"
-

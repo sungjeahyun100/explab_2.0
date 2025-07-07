@@ -1,7 +1,8 @@
 #include "d_matrix.hpp"
 
 template <typename T>
-std::ostream& operator<<(std::ostream& os, const d_matrix<T>& matrix) {
+std::ostream &operator<<(std::ostream &os, const d_matrix<T> &matrix)
+{
     os << matrix.getRow() << "x" << matrix.getCol() << "\n"; // 행렬 크기 출력
     for (int i = 0; i < matrix.getRow(); ++i) {
         for (int j = 0; j < matrix.getCol(); ++j) {
@@ -29,13 +30,71 @@ std::istream& operator>>(std::istream& is, d_matrix<T>& matrix) {
 
 template<typename T>
 __global__ void TransInKernel(T* d_A, T* d_C, int row, int col) {
-    int x = blockIdx.x * blockDim.x + threadIdx.x; // row index
-    int y = blockIdx.y * blockDim.y + threadIdx.y; // col index
+    int x = blockIdx.x * blockDim.x + threadIdx.x; 
+    int y = blockIdx.y * blockDim.y + threadIdx.y; 
 
     if (x < row && y < col) {
-        d_C[x * col + y] = d_A[y * row + x]; // 올바른 인덱싱
+        d_C[x * col + y] = d_A[y * row + x];
     }
 }
+
+template<typename T>
+__global__ void rotateInKernel(T *d_A, T *d_C, int row, int col)
+{
+    int x = blockIdx.x * blockDim.x + threadIdx.x; 
+    int y = blockIdx.y * blockDim.y + threadIdx.y; 
+
+    if (x < row && y < col) {
+        int idx_C = x * col + y;
+        int src_i = row - 1 - x;
+        int src_j = col - 1 - y;
+        int idx_A = src_i * col + src_j;
+        d_C[idx_C] = d_A[idx_A];
+    }
+}
+
+template<typename T>
+__global__ void zeroPad(T *d_A, T *d_C, int row, int col, int c_row, int c_col)
+{
+    int x = blockIdx.x * blockDim.x + threadIdx.x;
+    int y = blockIdx.y * blockDim.y + threadIdx.y;
+
+    if (x >= c_row || y >= c_col) return;
+
+    // Calculate padding offsets
+    int pad_row = (c_row - row) / 2;
+    int pad_col = (c_col - col) / 2;
+
+    // Flattened index for output
+    int idx_C = x * c_col + y;
+
+    // Check if inside the original matrix region
+    if (x < pad_row || x >= pad_row + row ||
+        y < pad_col || y >= pad_col + col) {
+        // Outside input -> pad with zero
+        d_C[idx_C] = T(0);
+    } else {
+        // Map to input index
+        int src_i = x - pad_row;
+        int src_j = y - pad_col;
+        int idx_A = src_i * col + src_j;
+        d_C[idx_C] = d_A[idx_A];
+    }
+}
+
+template <typename T>
+d_matrix<T> zeroPedding(const d_matrix<T> &d_A, int size)
+{
+    d_matrix<double> C(d_A.getRow()+(size*2), d_A.getCol()+(size*2));
+    dim3 blockSize(32, 32);
+    dim3 gridSize((C.getRow() + blockSize.x - 1) / blockSize.x, (C.getCol() + blockSize.y - 1) / blockSize.y);
+    zeroPad<<<gridSize, blockSize>>>(d_A.getDevPointer(), C.getDevPointer(), d_A.getRow(), d_A.getCol(), C.getRow(), C.getCol());
+    cudaDeviceSynchronize();
+    C.cpyToHost();
+
+    return C;
+}
+
 
 template<typename T, int TILE>
 __global__ void matmul_tiled(const T* __restrict__ A,
@@ -639,6 +698,7 @@ template d_matrix<double> HadamardProduct(const d_matrix<double>&, const d_matri
 template d_matrix<double> ScalaProduct(const d_matrix<double>&, double);
 template d_matrix<double> matrixMP(const d_matrix<double>&, const d_matrix<double>&);
 template d_matrix<double> matrixPlus(const d_matrix<double>&, const d_matrix<double>&);
+template d_matrix<double> zeroPedding<double>(const d_matrix<double>& d_A, int size);
 template d_matrix<double> MatrixActivate<double, relu<double>>(const d_matrix<double>&);
 template d_matrix<double> MatrixActivate<double, d_relu<double>>(const d_matrix<double>&);
 template d_matrix<double> MatrixActivate<double, lrelu<double>>(const d_matrix<double>&);
@@ -695,6 +755,8 @@ template __global__ void ActivateInKernel<double, Softplus<double>>(double*, dou
 template __global__ void ActivateInKernel<double, sqr<double>>(double*, double*, int, int);
 template __global__ void ActivateInKernel<double, devide<double>>(double*, double*, int, int);
 template __global__ void ActivateInKernel<double, Log<double>>(double*, double*, int, int);
+template __global__ void rotateInKernel<double>(double* d_A, double* d_C, int row, int col);
+template __global__ void zeroPad<double>(double* d_A, double* d_C, int row, int col, int c_row, int c_col);
 template __global__ void plusScalaToMatrix<double>(double*, int, int, double);
 template __global__ void castKernel<double>(const double*, double*, int);
 template __global__ void softmaxKernel<double>(double*, double*, int, int);

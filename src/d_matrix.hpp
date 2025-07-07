@@ -62,11 +62,14 @@ const double epsilon = 1e-10;
     } while(0)
 
 
+
 // English: CUDA kernel for transposing a matrix on the GPU.
 // 한글: GPU에서 행렬을 전치하기 위한 CUDA 커널입니다.
 template<typename T>
 __global__ void TransInKernel(T* d_A, T* d_C, int row, int col);
 
+template<typename T>
+__global__ void rotateInKernel(T* d_A, T* d_C, int row, int col);
 
 template<typename T>
 class d_matrix {
@@ -226,6 +229,16 @@ public:
         return transposed;
     }
 
+    d_matrix<T> rotated180() const {
+        d_matrix<T> rotated(rowSize, colSize);
+        dim3 blockSize(32, 32);
+        dim3 gridSize((rowSize + blockSize.x - 1) / blockSize.x, (colSize + blockSize.y - 1) / blockSize.y);
+        rotateInKernel<<<gridSize, blockSize>>>(d_data, rotated.getDevPointer(), rowSize, colSize);
+        cudaDeviceSynchronize();
+        rotated.cpyToHost();
+        return rotated;
+    }
+
     // printMatrix: 디바이스 데이터를 호스트로 복사한 후 행렬을 출력합니다.
     void printMatrix() const {
         std::vector<T> host_data(rowSize * colSize);
@@ -237,6 +250,30 @@ public:
                 std::cout << std::setw(4) << host_data[i * colSize + j];
             }
             std::cout << std::endl;
+        }
+    }
+
+    d_matrix<T> flatten() const {
+        d_matrix<T> F(rowSize*colSize, 1);
+        CHECK_CUDA_ERROR(cudaMemcpy(F.getDevPointer(), d_data,  rowSize * colSize * sizeof(T), cudaMemcpyDeviceToDevice));
+        F.cpyToHost();
+        return F;
+    }
+
+    //    (rows*cols × 1) 혹은 (1 × rows*cols) 벡터를 (newR × newC) 매트릭스로 변경
+    d_matrix<T> reshape(int newR, int newC) const {
+        d_matrix<T> M(newR, newC);
+        if(rowSize == newR*newC && colSize == 1){
+            CHECK_CUDA_ERROR(cudaMemcpy(M.getDevPointer(), d_data, rowSize*colSize*sizeof(T), cudaMemcpyDeviceToDevice));
+            M.cpyToHost();
+            return M;
+        }else if(colSize == newR*newC && rowSize == 1){
+            CHECK_CUDA_ERROR(cudaMemcpy(M.getDevPointer(), d_data, rowSize*colSize*sizeof(T), cudaMemcpyDeviceToDevice));
+            d_matrix<T> M_t = M.transpose();
+            return M_t;
+        }else{
+            std::cerr << "[ERROR] error in reshape by pushing non-flatten d_matrix\n";
+            exit(1);
         }
     }
 };
@@ -254,6 +291,12 @@ namespace std {
         }
     };
 }
+
+template<typename T>
+__global__ void zeroPad(T* d_A, T* d_C, int row, int col, int c_row, int c_col);
+
+template<typename T>
+d_matrix<T> zeroPedding(const d_matrix<T>& d_A, int size);
 
 template<typename T, int TILE>
 __global__ void matmul_tiled(const T* __restrict__ A, const T* __restrict__ B, T* __restrict__ C, int M, int N, int K);
@@ -439,7 +482,6 @@ __global__ void convoluteInKernel(T* d_A, T* d_B, T* d_C, int inputRow, int inpu
 // 한글: GPU 연산을 사용하여 행렬에 합성곱 연산을 수행합니다.
 template<typename T>
 d_matrix<T> convolute(const d_matrix<T>& d_A, const d_matrix<T>& d_B, int stride);
-
 
 // English: CUDA kernel for initializing CURAND states on the GPU.
 // 한글: GPU에서 CURAND 상태를 초기화하기 위한 CUDA 커널입니다.
