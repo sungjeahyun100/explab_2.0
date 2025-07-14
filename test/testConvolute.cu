@@ -1,4 +1,5 @@
 #include "perceptronVer2.hpp"
+
 int main(){
     SGD opt(0.01);
     PerceptronLayer layer(2,2,&opt, InitType::He);
