@@ -419,7 +419,7 @@ namespace d_matrix_ver2{
     }
     
     template<typename T>
-    __global__ void ScalaKernel(T* d_A, T scalar, T* d_C, int row, int col) {
+    __global__ void ScalainKernel(T* d_A, T scalar, T* d_C, int row, int col) {
         int x = blockIdx.x * blockDim.x + threadIdx.x;
         int y = blockIdx.y * blockDim.y + threadIdx.y;
     
@@ -438,7 +438,7 @@ namespace d_matrix_ver2{
         dim3 blockSize(32, 32);
         dim3 gridSize((row + blockSize.x - 1) / blockSize.x, (col + blockSize.y - 1) / blockSize.y);
     
-        ScalaKernel<<<gridSize, blockSize>>>(d_A.getDevPointer(), scalar, C.getDevPointer(), row, col);
+        ScalainKernel<<<gridSize, blockSize>>>(d_A.getDevPointer(), scalar, C.getDevPointer(), row, col);
         cudaDeviceSynchronize();
         return C;
     }
