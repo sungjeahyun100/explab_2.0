@@ -7,6 +7,8 @@ mkdir -p "$BUILD_DIR"
 
 
 nvcc -std=c++20 \
+    -G \
+    -g \
     -I "$PROJECT_ROOT/src" \
     "$PROJECT_ROOT/test/test_ver2.cu" \
     -o "$BUILD_DIR/testCon" \

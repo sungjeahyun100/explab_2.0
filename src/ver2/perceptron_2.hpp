@@ -1,5 +1,8 @@
 #include <ver2/d_matrix_2.hpp>
+#include <cudnn.h>
 #include <memory>
+
+#define CHK_CUDNN(call) if((call)!=CUDNN_STATUS_SUCCESS) throw std::runtime_error(cudnnGetErrorString(call));
 
 namespace d2 = d_matrix_ver2;
 
@@ -116,7 +119,7 @@ namespace perceptron_2 {
         d2::d_matrix_2<double> delta;
         d2::d_matrix_2<double> gradW;
         d2::d_matrix_2<double> gradB;
-        std::unique_ptr<optimizer> opt;
+        optimizer* opt;
         int deviceId;
         cudaDeviceProp props;
         size_t threadsPerBlock;
@@ -228,11 +231,18 @@ namespace perceptron_2 {
             double getLoss();
             // 손실 미분 반환
             d2::d_matrix_2<double> getGrad();
+            inline dim3 grid2d(int rows, int cols) {
+                return dim3(
+                  (cols + TILE-1)/TILE,   // x-direction = #tiles across columns
+                  (rows + TILE-1)/TILE    // y-direction = #tiles across rows
+                );
+            }
+    
+            inline dim3 block2d() { return dim3(TILE, TILE); }
     };
     
     void ActivateLayer::pushInput(const d2::d_matrix_2<double>& in){
         input = in;
-        input.cpyToDev();
     }
     
     // 활성화 적용 (output = f(input))
@@ -315,10 +325,6 @@ namespace perceptron_2 {
     // MSE: L = 1/n Σ(y-p)^2
     // CrossEntropy: L = -Σ y log(softmax(p))
     double LossLayer::getLoss(){
-        // 1) 디바이스→호스트 복사
-        output.cpyToHost();
-        target.cpyToHost();
-    
         switch (Loss)
         {
             case LossType::MSE: {
@@ -384,10 +390,139 @@ namespace perceptron_2 {
         }
     }
 
-    class convLayer{
-        private:
-            
+    class convLayer {
+        cudnnHandle_t                   _handle;
+        cudnnTensorDescriptor_t         _xDesc, _yDesc;
+        cudnnFilterDescriptor_t         _wDesc;
+        cudnnConvolutionDescriptor_t    _convDesc;
+        cudnnConvolutionFwdAlgoPerf_t*  _perfResults;
+        int                             _returnedAlgoCount;
+        cudnnConvolutionFwdAlgo_t       _bestAlgo;
+        size_t                          _workspaceBytes;
+        void*                           _workspace;
+    
+    public:
+        convLayer(int N, int C, int H, int W,    // input dims
+                  int K, int R, int S,            // filter dims
+                  int pad_h, int pad_w,
+                  int stride_h, int stride_w)
+        {
+            // 1) cuDNN 핸들 & 디스크립터 생성
+            cudnnCreate(&_handle);
+            cudnnCreateTensorDescriptor(&_xDesc);
+            cudnnCreateTensorDescriptor(&_yDesc);
+            cudnnCreateFilterDescriptor(&_wDesc);
+            cudnnCreateConvolutionDescriptor(&_convDesc);
+    
+            // 2) 디스크립터 설정
+            cudnnSetTensor4dDescriptor(_xDesc,
+                                       CUDNN_TENSOR_NCHW,
+                                       CUDNN_DATA_FLOAT,
+                                       N, C, H, W);
+            cudnnSetFilter4dDescriptor(_wDesc,
+                                       CUDNN_DATA_FLOAT,
+                                       CUDNN_TENSOR_NCHW,
+                                       K, C, R, S);
+            cudnnSetConvolution2dDescriptor(_convDesc,
+                                            pad_h, pad_w,
+                                            stride_h, stride_w,
+                                            1, 1,
+                                            CUDNN_CROSS_CORRELATION,
+                                            CUDNN_DATA_FLOAT);
+            // 출력 크기 계산
+            int outN, outC, outH, outW;
+            cudnnGetConvolution2dForwardOutputDim(
+                _convDesc, _xDesc, _wDesc,
+                &outN, &outC, &outH, &outW);
+            cudnnSetTensor4dDescriptor(_yDesc,
+                                       CUDNN_TENSOR_NCHW,
+                                       CUDNN_DATA_FLOAT,
+                                       outN, outC, outH, outW);
+    
+            // 3) 가장 빠른 알고리즘 찾기 (v7 API)
+            const int MAX_ALGOS = CUDNN_CONVOLUTION_FWD_ALGO_COUNT;
+            _perfResults = new cudnnConvolutionFwdAlgoPerf_t[MAX_ALGOS];
+            cudnnGetConvolutionForwardAlgorithm_v7(
+                _handle,
+                _xDesc, _wDesc, _convDesc, _yDesc,
+                MAX_ALGOS,
+                &_returnedAlgoCount,
+                _perfResults
+            );
+            _bestAlgo       = _perfResults[0].algo;
+            _workspaceBytes = _perfResults[0].memory;
+    
+            // 4) 워크스페이스 할당
+            if (_workspaceBytes > 0) {
+                cudaMalloc(&_workspace, _workspaceBytes);
+            } else {
+                _workspace = nullptr;
+            }
+        }
+    
+        // forward 호출
+        void forward(const float* x, const float* w, float* y) {
+            const float alpha = 1.0f, beta = 0.0f;
+            cudnnConvolutionForward(
+                _handle,
+                &alpha, _xDesc, x,
+                        _wDesc, w,
+                _convDesc,
+                _bestAlgo,
+                _workspace, _workspaceBytes,
+                &beta,  _yDesc, y
+            );
+        }
+
+        void backward(const float* x,      // forward 에 사용된 입력
+                      const float* w,      // forward 에 사용된 필터
+                      const float* dY,     // 상위 레이어로부터 받은 gradient
+                      float* dX,           // 출력: 입력에 대한 gradient
+                      float* dW)           // 출력: 필터에 대한 gradient
+        {
+            const float alpha = 1.0f, beta = 0.0f;
+        
+            // 1) dW 계산
+            //    알고리즘은 미리 _bestAlgoFilter 등에 저장해 두어도 되고,
+            //    필요 시 v7 API 로 매번 찾아도 됩니다.
+            cudnnConvolutionBackwardFilter(
+                _handle,
+                &alpha,
+                _xDesc, x,
+                _yDesc, dY,
+                _convDesc,
+                /* algo = */ CUDNN_CONVOLUTION_BWD_FILTER_ALGO_1,
+                _workspace, _workspaceBytes,
+                &beta,
+                _wDesc, dW
+            );
+        
+            // 2) dX 계산
+            cudnnConvolutionBackwardData(
+                _handle,
+                &alpha,
+                _wDesc, w,
+                _yDesc, dY,
+                _convDesc,
+                /* algo = */ CUDNN_CONVOLUTION_BWD_DATA_ALGO_1,
+                _workspace, _workspaceBytes,
+                &beta,
+                _xDesc, dX
+            );
+        }
+        
+    
+        ~convLayer() {
+            if (_workspace) cudaFree(_workspace);
+            delete[] _perfResults;
+            cudnnDestroyConvolutionDescriptor(_convDesc);
+            cudnnDestroyFilterDescriptor(_wDesc);
+            cudnnDestroyTensorDescriptor(_yDesc);
+            cudnnDestroyTensorDescriptor(_xDesc);
+            cudnnDestroy(_handle);
+        }
     };
+
 
 }//namespace perceptron_2
 

@@ -1,12 +1,7 @@
 
-/**TODO:
- * 
-*/
-
 #pragma once
 #include <cuda_runtime.h>
 #include <curand_kernel.h>
-#include <cudnn.h>
 #include <vector>
 #include <iostream>
 #include <iomanip>
@@ -16,6 +11,16 @@
 #include <random>
 #include <fstream>
 #include <ostream>
+#include <stdexcept>
+
+#define CHECK_CUDA(call) \
+        do { \
+            cudaError_t err = call; \
+            if (err != cudaSuccess) { \
+                throw std::runtime_error(cudaGetErrorString(err)); \
+            } \
+        } while (0)
+    
 
 namespace d_matrix_ver2{
 
@@ -25,17 +30,9 @@ namespace d_matrix_ver2{
         Xavier,
         Uniform
     };
-    
-    #define CHECK_CUDA(call) \
-        do { \
-            cudaError_t err = call; \
-            if (err != cudaSuccess) { \
-                throw std::runtime_error(cudaGetErrorString(err)); \
-            } \
-        } while (0)
-    
     // GPU 전용 행렬 클래스: 호스트-디바이스 자동 동기화 비활성화
     // 필요할 때 수동으로 cpytoHost()/cpytoDev() 호출
+
     
     
     template<typename T>
