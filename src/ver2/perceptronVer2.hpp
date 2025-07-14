@@ -4,6 +4,7 @@
 #include <cmath>
 #include <string>
 #include "d_matrix.hpp"
+#include "d_matrix_2.hpp"
 
 // 활성화 타입과 손실 타입은 기존과 동일하게 사용
 enum class ActivationType {
