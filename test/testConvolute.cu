@@ -173,7 +173,7 @@ public:
 class MINSTsolver_SGD{
     private:
         SGD opt;
-        convolutionLayer c1_input; ActivateLayer c1_inputAct;
+        ConvLayer c1_input; ActivateLayer c1_inputAct;
         perceptronLayer input; ActivateLayer inputAct;
         perceptronLayer hidden1; ActivateLayer hidden1Act;
         perceptronLayer output; ActivateLayer outputAct;
@@ -182,9 +182,9 @@ class MINSTsolver_SGD{
         std::vector<std::pair<mat,uint8_t>> train_set;
         std::vector<std::pair<mat,uint8_t>> test_set;
     public:
-        MINSTsolver_SGD(int c1_inRow, int c1_inCol, int c1_kRow, int c1_kCol, int c1_st, int c1_output, int h1, int h2, int p_output) : 
+        MINSTsolver_SGD(int c1_inRow, int c1_inCol, int c1_kRow, int c1_kCol, int c1_st, int c1_outChannel, int c1_output, int h1, int h2, int p_output) : 
         opt(0.0001),
-        c1_input(c1_inRow, c1_inCol, c1_kRow, c1_kCol, c1_st, &opt, InitType::Xavier), c1_inputAct(c1_output, 1, ActivationType::Tanh),
+        c1_input(c1_inRow, c1_inCol, c1_kRow, c1_kCol, c1_st, c1_outChannel, &opt, InitType::Xavier), c1_inputAct(c1_output, 1, ActivationType::Tanh),
         input(c1_output, h1, &opt, InitType::Xavier), inputAct(h1, 1, ActivationType::Tanh),
         hidden1(h1, h2, &opt, InitType::Xavier), hidden1Act(h2, 1, ActivationType::Tanh),
         output(h2, p_output, &opt, InitType::Xavier), outputAct(p_output, 1, ActivationType::Tanh),
@@ -203,83 +203,10 @@ class MINSTsolver_SGD{
         }
 
         std::pair<mat, double> forward(const mat& in, const mat& target){
-            c1_input.feedforward(in); 
-            c1_inputAct.pushInput(c1_input.getOutput()); c1_inputAct.Active();
-            input.feedforward(c1_inputAct.getOutput().flatten());
-            inputAct.pushInput(input.getOutput()); inputAct.Active();
-            hidden1.feedforward(inputAct.getOutput());
-            hidden1Act.pushInput(hidden1.getOutput()); hidden1Act.Active();
-            output.feedforward(hidden1Act.getOutput());
-            outputAct.pushInput(output.getOutput()); outputAct.Active();
-            loss.pushOutput(outputAct.getOutput()); loss.pushTarget(target);
-
-            std::pair<mat, double> result = {outputAct.getOutput(), loss.getLoss()};
-            return result;
         }
 
-        void train(int epochs, int batchSize = 64) {
-            size_t N = train_set.size();
-            std::mt19937 rng(std::random_device{}());
-            std::shuffle(train_set.begin(), train_set.end(), rng);
-            
-            for (int e = 0; e < epochs; ++e) {
-        
-                auto startTime = std::chrono::steady_clock::now();
-                double epochLoss = 0.0;
-                int count = 0;
-        
-                    for (size_t idx = 0; idx < N; ++idx) {
-            
-                        // 하나의 샘플 학습
-                        const mat& x     = train_set[idx].first;
-                        uint8_t  label   = train_set[idx].second;
-            
-                        // one-hot 타겟
-                        mat target(output.getOutput().getRow(), 1);
-                        target.fill(0.0);
-                        target(label, 0) = 1.0;
-            
-                        // 순전파 & 손실
-                        auto [out, lossVal] = forward(x, target);
-                        epochLoss += lossVal;
-                        ++count;
-            
-                        // 역전파
-                        mat grad_out = loss.getGrad();
-                        auto d2 = output.backprop(nullptr, grad_out, outputAct.d_Active(output.getOutput()));
-                        auto d1 = hidden1.backprop(&output, d2, hidden1Act.d_Active(hidden1.getOutput()));
-                        auto d0 = input.backprop(&hidden1, d1, inputAct.d_Active(input.getOutput()));
-            
-                        auto convOut = c1_input.getOutput();
-                        mat d0mat   = d0.reshape(convOut.getRow(), convOut.getCol());
-                        c1_input.backprop(d0mat);
+        void train(int epochs, int batchSize = 64){
 
-                        std::string proc = "Epoch " + std::to_string(e) + "loss:" + std::to_string((epochLoss / count));
-                        printProgressBar(idx, N, startTime, proc);
-                    }
-            
-                    // 에폭 종료 시 100%로 표시하고 줄 바꿈
-                    printProgressBar(N, N, startTime, "Epoch " + std::to_string(e) + "loss:" + std::to_string((epochLoss / count)));
-                    std::cout << std::endl;
-            
-                    std::cout << "[Epoch " << e << "] avg loss = "
-                              << (epochLoss / count) << std::endl;
-            }
-            int test_c = test_set.size();
-            for(int idx = 0; idx < test_c; idx++){
-                const mat& x = test_set[idx].first;
-                uint8_t label = test_set[idx].second;
-
-                mat target(output.getOutput().getRow(), 1);
-                target.fill(0.0);
-                target(label, 0) = 1.0;
-
-                auto [out, lossVal] = forward(x, target);
-
-                std::cout << "테스트" << idx << ":" << std::endl;
-                out.printMatrix();
-                std::cout << "테스트" << idx << " 로스율:" << lossVal << std::endl;
-            } 
         }
 };
 
@@ -289,8 +216,6 @@ class MINSTsolver_Adam{};
 
 
 int main() {
-    MINSTsolver_SGD test_subject(28, 28, 4, 4, 1, 625, 128, 128, 10);
-    test_subject.train(10);
     return 0;
 }
 

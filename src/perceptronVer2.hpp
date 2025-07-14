@@ -148,89 +148,8 @@ public:
     d_matrix<double>& getOutput(){ return output; }
 };
 
-//-------------------------------------------------------------
-// ConvolutionLayer
-//-------------------------------------------------------------
-class convolutionLayer {
-    int inRow, inCol;           // 입력 크기
-    int fRow, fCol;             // 필터 크기
-    int stride;
-    d_matrix<double> input;     // 입력 저장
-    d_matrix<double> filter;    
-    d_matrix<double> bias;
-    d_matrix<double> output;    
-    d_matrix<double> delta;     // 다음 레이어로부터 받은 δ
-    d_matrix<double> gFilter;   // ∂L/∂W
-    d_matrix<double> gBias;     // ∂L/∂b
-    Optimizer* opt;
 
-public:
-    convolutionLayer(int iR, int iC,
-                     int fR, int fC, int st,
-                     Optimizer* optimizer,
-                     InitType init)
-      : inRow(iR), inCol(iC),
-        fRow(fR), fCol(fC),
-        stride(st),
-        input(iR, iC),
-        filter(fR, fC),
-        bias(1, 1),
-        output((iR - fR) / stride + 1,
-               (iC - fC) / stride + 1),
-        delta(output.getRow(), output.getCol()),
-        gFilter(fR, fC),
-        gBias(1, 1),
-        opt(optimizer)
-    {
-        filter = InitWeight<double>(fR, fC, init);
-        bias.fill(0.01);
-    }
-
-    void feedforward(const d_matrix<double>& in) {
-        input = in;
-        output = convolute<double>(input, filter, stride);
-        output = ScalaPlus(output, bias(0, 0));
-        cudaDeviceSynchronize();
-    }
-
-    d_matrix<double> backprop(const d_matrix<double>& ext_delta) {
-        delta = ext_delta;
-        int outR = output.getRow();
-        int outC = output.getCol();
-    
-        // 1) 필터 그래디언트
-        gFilter.fill(0.0);
-        gFilter = convolute<double>(input, delta, stride);
-    
-        // 2) 바이어스 그래디언트
-        gBias(0,0) = plusAllElements(delta);
-    
-        // 3) W, B 동시 업데이트
-        opt->update(filter, bias, gFilter, gBias);
-        filter.cpyToDev();
-        bias.cpyToDev();
-
-        int dR = outR + (outR-1)*(stride-1);
-        int dC = outC + (outC-1)*(stride-1);
-        d_matrix<double> delta_dilated(dR, dC);
-        delta_dilated.fill(0.0);
-        for(int i=0; i<outR; ++i)
-          for(int j=0; j<outC; ++j)
-            delta_dilated(i*stride, j*stride) = delta(i,j);
-
-        delta_dilated.cpyToDev();
-        // 4) 입력 그래디언트 δ_prev 계산
-        auto filter_rot = filter.rotated180();
-        auto delta_full  = zeroPedding<double>(delta_dilated, fRow - 1);
-        d_matrix<double> delta_prev = convolute<double>(delta_full, filter_rot, 1);
-    
-        return delta_prev;
-    }
-
-    d_matrix<double>& getOutput(){ return output; }
-};
-
-class MultiConvLayer {
+class ConvLayer {
 private:
     int inH, inW;           // 입력 높이·너비
     int fH, fW;             // 필터 높이·너비
@@ -249,7 +168,7 @@ private:
     Optimizer* opt;
 
 public:
-    MultiConvLayer(int inH_, int inW_,
+    ConvLayer(int inH_, int inW_,
                    int fH_, int fW_,
                    int stride_,
                    int outChannels,
@@ -323,7 +242,7 @@ public:
         return delta_prev;
     }
 
-    // 출력 맵 반환
+    // 출력 맵 반환 conv -> conv 전용
     const std::vector<d_matrix<double>>& getOutputs() const {
         return outputs;
     }
