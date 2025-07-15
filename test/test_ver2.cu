@@ -85,7 +85,7 @@ class XORsolver_Adam{
 };
 
 int main(){
-    XORsolver_Adam test(2, 4, 4, 1, d2::InitType::He, p2::LossType::MSE, p2::ActType::Swish, 0.0001, 4);
+    XORsolver_Adam test(2, 4, 4, 1, d2::InitType::Xavier, p2::LossType::CrossEntropy, p2::ActType::Tanh, 0.0001, 4);
     test.backprop(10000);
     return 0;
 }
