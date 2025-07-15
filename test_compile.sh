@@ -9,6 +9,7 @@ mkdir -p "$BUILD_DIR"
 nvcc -std=c++20 \
     -G \
     -g \
+<<<<<<< HEAD
     -I "$PROJECT_ROOT/src" \
     "$PROJECT_ROOT/test/testConvolute.cu" \
     "$PROJECT_ROOT/src/d_matrix.cu" \
@@ -19,3 +20,29 @@ nvcc -std=c++20 \
     -Xcompiler="-pthread" 
 echo "✅ build/testCon 빌드 완료"
 
+=======
+    -expt-extended-lambda \
+    -I "$PROJECT_ROOT/src" \
+    "$PROJECT_ROOT/test/test_ver2.cu" \
+    -o "$BUILD_DIR/test_per" \
+    -lcurl \
+    -lcurand \
+    -lcudnn \
+    -Xcompiler="-pthread"
+echo "✅ build/test_per 빌드 완료"
+
+nvcc -std=c++20 \
+    -G \
+    -g \
+    -expt-extended-lambda \
+    -I "$PROJECT_ROOT/src" \
+    "$PROJECT_ROOT/test/test_conv_2.cu" \
+    -o "$BUILD_DIR/test_con" \
+    -lcurl \
+    -lcurand \
+    -lcudnn \
+    -Xcompiler="-pthread"
+echo "✅ build/test_con 빌드 완료"
+
+
+>>>>>>> main
