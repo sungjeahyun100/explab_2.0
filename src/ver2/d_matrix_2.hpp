@@ -59,7 +59,44 @@ namespace d_matrix_ver2{
             d_C[idx_C] = d_A[idx_A];
         }
     }
+
+    template<typename T>
+    __global__ void getMatrix_Row(T* d_A, T* d_C, int row, int col, int where_r){//가로열 반환
+        int x = blockIdx.x * blockDim.x + threadIdx.x; 
+        int y = blockIdx.y * blockDim.y + threadIdx.y; 
+
+        if(x < row && y < col) {
+            int idx = x*col+y;
+            if(x == where_r){
+                d_C[y] = d_A[idx];
+            }
+        }
+    }
+
+    template<typename T>
+    __global__ void getMatrix_Col(T* d_A, T* d_C, int row, int col, int where_c){//세로열 반환
+        int x = blockIdx.x * blockDim.x + threadIdx.x; 
+        int y = blockIdx.y * blockDim.y + threadIdx.y; 
+
+        if(x < row && y < col) {
+            int idx = x*col+y;
+            if(y == where_c){
+                d_C[x] = d_A[idx];
+            }
+        }
+    }
     
+    template<typename T>
+    __global__ void reduceRows(const T* d_A, T* d_C, int rows, int cols) {
+        int x = blockIdx.x * blockDim.x + threadIdx.x;
+        if (x < cols) {
+            T sum = T(0);
+            for (int i = 0; i < rows; ++i) {
+                sum += d_A[i * cols + x];
+            }
+            d_C[x] = sum;
+        }
+    }
     template<typename T>
     class d_matrix_2 {
     private:
@@ -216,10 +253,9 @@ namespace d_matrix_ver2{
             std::vector<T> host_data(row * col);
             CHECK_CUDA(cudaMemcpy(host_data.data(), d_data, row * col * sizeof(T), cudaMemcpyDeviceToHost));
     
-            std::cout << "행렬 출력:" << std::endl;
             for (int i = 0; i < row; i++) {
                 for (int j = 0; j < col; j++) {
-                    std::cout << std::setw(4) << host_data[i * col + j];
+                    std::cout << std::setw(4) << host_data[i * col + j] << " ";
                 }
                 std::cout << std::endl;
             }
@@ -241,7 +277,7 @@ namespace d_matrix_ver2{
         d_matrix_2<T> reshape(int newR, int newC) const {
             if (static_cast<size_t>(newR) * newC != size())
                 throw std::invalid_argument("reshape: size mismatch");
-            d_matrix_2<T> V(*this);
+            d_matrix_2<T> V = *this;
             V.row = newR;
             V.col = newC;
             return V;

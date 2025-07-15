@@ -97,11 +97,12 @@ namespace perceptron_2 {
 
             int rows = W.getRow(), cols = W.getCol();
             int N = rows * cols;
+            int N_B = B.getRow()*B.getCol();
             
             const int blockSize = 256;
             int gridSize = (N + blockSize - 1) / blockSize;
             CalcAdam<<<gridSize, blockSize, 0, st1>>>(gW.getDevPointer(), W.getDevPointer(), mW.getDevPointer(), vW.getDevPointer(), beta1, beta2, lr, eps, bc1, bc2, N);
-            CalcAdam<<<gridSize, blockSize, 0, st1>>>(gB.getDevPointer(), B.getDevPointer(), mB.getDevPointer(), vB.getDevPointer(), beta1, beta2, lr, eps, bc1, bc2, rows);
+            CalcAdam<<<gridSize, blockSize, 0, st1>>>(gB.getDevPointer(), B.getDevPointer(), mB.getDevPointer(), vB.getDevPointer(), beta1, beta2, lr, eps, bc1, bc2, N_B);
             cudaStreamSynchronize(st1);
         }
         ~Adam() noexcept {
@@ -133,6 +134,7 @@ namespace perceptron_2 {
         cudaStream_t str;
         d2::d_matrix_2<double> w_t;
         d2::d_matrix_2<double> i_t;
+        int sample_num;
     public:
         inline dim3 grid2d(int rows, int cols) {
           return dim3(
@@ -143,24 +145,27 @@ namespace perceptron_2 {
 
         inline dim3 block2d() { return dim3(TILE, TILE); }
 
-        PerceptronLayer(int i, int o, optimizer* optimizer, d2::InitType init)
-            : inputSize(i), outputSize(o),
-              input(i,1), weight(o,i), bias(o,1),
-              output(o,1), delta(o,1), gradW(o,i), gradB(o,1), opt(optimizer){
+        PerceptronLayer(int n, int i, int o, optimizer* optimizer, d2::InitType init)
+            : inputSize(i), outputSize(o), sample_num(n),
+              input(n, i), weight(i, o), bias(1, o),
+              output(n, o), delta(n, o), gradW(i, o), gradB(1, o), opt(optimizer){
             cudaGetDevice(&deviceId);
             cudaGetDeviceProperties(&props, deviceId);
             threadsPerBlock = props.maxThreadsPerBlock;
             numberOfBlocks = props.multiProcessorCount;
-            weight = d2::InitWeight<double>(o,i,init);
+            weight = d2::InitWeight<double>(i, o,init);
             bias.fill(0.01);
-            i_t.resize(1, inputSize);
+            i_t.resize(inputSize, n);
             cudaStreamCreate(&str);
         }
+
+        const d2::d_matrix_2<double>& getWeight() const { return weight; }
+        const d2::d_matrix_2<double>& getDelta()  const { return delta; }
     
         void feedforward(const d2::d_matrix_2<double>& in) {
             input = in;
-            d2::matmul_tiled<double, 32><<<grid2d(outputSize, inputSize), block2d(), 2*TILE*TILE*sizeof(double), str>>>(weight.getDevPointer(), input.getDevPointer(), output.getDevPointer(), outputSize, 1, inputSize);//2^5, 2^5, 2개
-            d2::PlusinKernel<double><<<grid2d(outputSize, 1), block2d(), 0, str>>>(output.getDevPointer(), bias.getDevPointer(), output.getDevPointer(), outputSize, 1);
+            d2::matmul_tiled<double, TILE><<<grid2d(outputSize, inputSize), block2d(), 2*TILE*TILE*sizeof(double), str>>>(input.getDevPointer(), weight.getDevPointer(), output.getDevPointer(), sample_num, outputSize, inputSize);//2^5, 2^5, 2개
+            d2::PlusinKernel<double><<<grid2d(sample_num, outputSize), block2d(), 0, str>>>(output.getDevPointer(), bias.getDevPointer(), output.getDevPointer(), sample_num, outputSize);
             cudaStreamSynchronize(str);
             
         }
@@ -172,14 +177,14 @@ namespace perceptron_2 {
                 int tC = next->weight.getRow();
                 w_t.resize(tC, tR);
                 d2::TransInKernel<double><<<grid2d(tC, tR), block2d(), 0, str>>>(next->weight.getDevPointer(), w_t.getDevPointer(), next->weight.getRow(), next->weight.getCol());
-                d2::matmul_tiled<double, 32><<<grid2d(inputSize, outputSize), block2d(), 2*TILE*TILE*sizeof(double), str>>>(w_t.getDevPointer(), next->delta.getDevPointer(), grad_input.getDevPointer(), inputSize, 1, outputSize);
+                d2::matmul_tiled<double, 32><<<grid2d(inputSize, outputSize), block2d(), 2*TILE*TILE*sizeof(double), str>>>(next->delta.getDevPointer(), w_t.getDevPointer(), grad_input.getDevPointer(), sample_num, inputSize, outputSize);
             }
 
             {
-                d2::HPinKernel<double><<<grid2d(inputSize, 1), block2d(), 0, str>>>(grad_input.getDevPointer(), act_deriv.getDevPointer(), delta.getDevPointer(), inputSize, 1);
-                d2::TransInKernel<double><<<grid2d(1, inputSize), block2d(), 0, str>>>(input.getDevPointer(), i_t.getDevPointer(), input.getRow(), 1);
-                d2::matmul_tiled<double, 32><<<grid2d(outputSize, inputSize), block2d(), 2*TILE*TILE*sizeof(double), str>>>(delta.getDevPointer(), i_t.getDevPointer(), gradW.getDevPointer(), outputSize, inputSize, 1);
-                gradB = delta;
+                d2::HPinKernel<double><<<grid2d(inputSize, 1), block2d(), 0, str>>>(grad_input.getDevPointer(), act_deriv.getDevPointer(), delta.getDevPointer(), inputSize, sample_num);
+                d2::TransInKernel<double><<<grid2d(inputSize, sample_num), block2d(), 0, str>>>(input.getDevPointer(), i_t.getDevPointer(), sample_num, inputSize);
+                d2::matmul_tiled<double, TILE><<<grid2d(outputSize, inputSize), block2d(), 2*TILE*TILE*sizeof(double), str>>>(i_t.getDevPointer(), delta.getDevPointer(), gradW.getDevPointer(), inputSize, outputSize, sample_num);
+                d2::reduceRows<double><<<numberOfBlocks, threadsPerBlock, 0, str>>>(delta.getDevPointer(), gradB.getDevPointer(), sample_num, outputSize);
             }
             opt->update(weight, bias, gradW, gradB);
             cudaStreamSynchronize(str);
@@ -355,7 +360,7 @@ namespace perceptron_2 {
                     0.0,
                     thrust::plus<double>()
                 );
-                return sum / static_cast<double>(N);
+                return sum / (static_cast<double>(N)*output.getCol());
             }
     
             case LossType::CrossEntropy: {
@@ -382,7 +387,7 @@ namespace perceptron_2 {
                     0.0,
                     thrust::plus<double>()
                 );
-                return sum / static_cast<double>(N);
+                return sum / (static_cast<double>(N)*output.getCol());
             }
     
             default:
@@ -422,75 +427,185 @@ namespace perceptron_2 {
     }
 
     class convLayer {
-        cudnnHandle_t                   _handle;
-        cudnnTensorDescriptor_t         _xDesc, _yDesc;
-        cudnnFilterDescriptor_t         _wDesc;
-        cudnnConvolutionDescriptor_t    _convDesc;
-        cudnnConvolutionFwdAlgoPerf_t*  _perfResults;
-        int                             _returnedAlgoCount;
-        cudnnConvolutionFwdAlgo_t       _bestAlgo;
-        size_t                          _workspaceBytes;
-        void*                           _workspace;
+        // cuDNN 오브젝트
+        cudnnHandle_t                _handle;
+        cudnnTensorDescriptor_t      _xDesc, _yDesc, _biasDesc;
+        cudnnFilterDescriptor_t      _wDesc;
+        cudnnConvolutionDescriptor_t _convDesc;
+        cudnnConvolutionFwdAlgo_t    _bestAlgo;
+        size_t                       _workspaceBytes;
+        void*                        _workspace = nullptr;
     
-    public:
-        convLayer(int N, int C, int H, int W, int K, int R, int S, int pad_h, int pad_w, int stride_h, int stride_w)
+        // 호스트/디바이스 저장용
+        int N,C,H,W,K,R,S,pad_h,pad_w,stride_h,stride_w;
+        d2::d_matrix_2<double> input, kernel, bias;
+        d2::d_matrix_2<double> output, delta, gradW, gradB;
+    
+        optimizer* opt;
+    
+      public:
+        convLayer(int N_, int C_, int H_, int W_,
+                  int K_, int R_, int S_,
+                  int pad_h_, int pad_w_,
+                  int stride_h_, int stride_w_,
+                  optimizer* o)
+          : N(N_), C(C_), H(H_), W(W_)
+          , K(K_), R(R_), S(S_)
+          , pad_h(pad_h_), pad_w(pad_w_)
+          , stride_h(stride_h_), stride_w(stride_w_)
+          , input(N_, C_*H_*W_)
+          , kernel(K_, C_*R_*S_)
+          , bias(1, K_)
+          , output(N_, K_*((H_+2*pad_h_-R_)/stride_h_+1)*((W_+2*pad_w_-S_)/stride_w_+1))
+          , delta(output.getRow(), output.getCol())
+          , gradW(kernel.getRow(), kernel.getCol())
+          , gradB(bias.getRow(), bias.getCol())
+          , opt(o)
         {
-            // 1) cuDNN 핸들 & 디스크립터 생성
-            cudnnCreate(&_handle);
-            cudnnCreateTensorDescriptor(&_xDesc);
-            cudnnCreateTensorDescriptor(&_yDesc);
-            cudnnCreateFilterDescriptor(&_wDesc);
-            cudnnCreateConvolutionDescriptor(&_convDesc);
+          // — cuDNN 생략 없이 에러 체크까지 —
+          CHK_CUDNN(cudnnCreate(&_handle));
+          CHK_CUDNN(cudnnCreateTensorDescriptor(&_xDesc));
+          CHK_CUDNN(cudnnCreateTensorDescriptor(&_yDesc));
+          CHK_CUDNN(cudnnCreateTensorDescriptor(&_biasDesc));
+          CHK_CUDNN(cudnnCreateFilterDescriptor(&_wDesc));
+          CHK_CUDNN(cudnnCreateConvolutionDescriptor(&_convDesc));
     
-            // 2) 디스크립터 설정
-            cudnnSetTensor4dDescriptor(_xDesc, CUDNN_TENSOR_NCHW, CUDNN_DATA_FLOAT, N, C, H, W);
-            cudnnSetFilter4dDescriptor(_wDesc, CUDNN_DATA_FLOAT, CUDNN_TENSOR_NCHW, K, C, R, S);
-            cudnnSetConvolution2dDescriptor(_convDesc, pad_h, pad_w, stride_h, stride_w, 1, 1, CUDNN_CROSS_CORRELATION, CUDNN_DATA_FLOAT);
-            // 출력 크기 계산
-            int outN, outC, outH, outW;
-            cudnnGetConvolution2dForwardOutputDim(_convDesc, _xDesc, _wDesc, &outN, &outC, &outH, &outW);
-            cudnnSetTensor4dDescriptor(_yDesc, CUDNN_TENSOR_NCHW, CUDNN_DATA_FLOAT, outN, outC, outH, outW);
+          CHK_CUDNN(cudnnSetTensor4dDescriptor(_xDesc,
+              CUDNN_TENSOR_NCHW, CUDNN_DATA_DOUBLE, N,C,H,W));
+          CHK_CUDNN(cudnnSetFilter4dDescriptor(_wDesc,
+              CUDNN_DATA_DOUBLE, CUDNN_TENSOR_NCHW, K,C,R,S));
+          CHK_CUDNN(cudnnSetConvolution2dDescriptor(_convDesc,
+              pad_h, pad_w, stride_h, stride_w, 1,1,
+              CUDNN_CROSS_CORRELATION, CUDNN_DATA_DOUBLE));
     
-            // 3) 가장 빠른 알고리즘 찾기 (v7 API)
-            const int MAX_ALGOS = CUDNN_CONVOLUTION_FWD_ALGO_COUNT;
-            _perfResults = new cudnnConvolutionFwdAlgoPerf_t[MAX_ALGOS];
-            cudnnGetConvolutionForwardAlgorithm_v7( _handle, _xDesc, _wDesc, _convDesc, _yDesc, MAX_ALGOS, &_returnedAlgoCount, _perfResults);
-            _bestAlgo       = _perfResults[0].algo;
-            _workspaceBytes = _perfResults[0].memory;
+          int outN,outC,outH,outW;
+          CHK_CUDNN(cudnnGetConvolution2dForwardOutputDim(
+              _convDesc, _xDesc, _wDesc, &outN,&outC,&outH,&outW));
+          CHK_CUDNN(cudnnSetTensor4dDescriptor(_yDesc,
+              CUDNN_TENSOR_NCHW, CUDNN_DATA_DOUBLE, outN,outC,outH,outW));
+          CHK_CUDNN(cudnnSetTensor4dDescriptor(_biasDesc,
+              CUDNN_TENSOR_NCHW, CUDNN_DATA_DOUBLE, 1,outC,1,1));
     
-            // 4) 워크스페이스 할당
-            if (_workspaceBytes > 0) {
-                cudaMalloc(&_workspace, _workspaceBytes);
-            } else {
-                _workspace = nullptr;
-            }
-        }
-    
-        // forward 호출
-        void forward(const float* x, const float* w, float* y) {
-            const float alpha = 1.0f, beta = 0.0f;
-            cudnnConvolutionForward(_handle, &alpha, _xDesc, x, _wDesc, w, _convDesc, _bestAlgo, _workspace, _workspaceBytes, &beta,  _yDesc, y);
+          // fastest algo 한 개만 뽑기
+          int algoCount;
+          cudnnConvolutionFwdAlgoPerf_t perf;
+          CHK_CUDNN(cudnnGetConvolutionForwardAlgorithm_v7(
+              _handle, _xDesc, _wDesc, _convDesc, _yDesc,
+              1, &algoCount, &perf));
+          _bestAlgo      = perf.algo;
+          _workspaceBytes= perf.memory;
+          if(_workspaceBytes>0)
+            cudaMalloc(&_workspace, _workspaceBytes);
         }
 
-        void backward(const float* x, const float* w, const float* dY, float* dX, float* dW)           // 출력: 필터에 대한 gradient
-        {
-            const float alpha = 1.0f, beta = 0.0f;
-            // 1) dW 계산.
-            cudnnConvolutionBackwardFilter( _handle, &alpha, _xDesc, x, _yDesc, dY, _convDesc, CUDNN_CONVOLUTION_BWD_FILTER_ALGO_1, _workspace, _workspaceBytes, &beta, _wDesc, dW);
-            // 2) dX 계산
-            cudnnConvolutionBackwardData(_handle, &alpha, _wDesc, w, _yDesc, dY, _convDesc, CUDNN_CONVOLUTION_BWD_DATA_ALGO_1, _workspace, _workspaceBytes, &beta, _xDesc, dX);
+        inline dim3 grid2d(int rows, int cols) {
+          return dim3(
+            (cols + TILE-1)/TILE,   // x-direction = #tiles across columns
+            (rows + TILE-1)/TILE    // y-direction = #tiles across rows
+          );
         }
-        
+
+        inline dim3 block2d() { return dim3(TILE, TILE); }
     
-        ~convLayer() {
-            if (_workspace) cudaFree(_workspace);
-            delete[] _perfResults;
-            cudnnDestroyConvolutionDescriptor(_convDesc);
-            cudnnDestroyFilterDescriptor(_wDesc);
-            cudnnDestroyTensorDescriptor(_yDesc);
-            cudnnDestroyTensorDescriptor(_xDesc);
-            cudnnDestroy(_handle);
+        // 순전파 (호스트에서 호출)
+        // x: (N × C×H×W)  kernel: (K × C×R×S)  bias: (1×K×1×1)
+        d2::d_matrix_2<double> forward(const d2::d_matrix_2<double>& x_dev) {
+          // 1) 입력 복사
+          input = x_dev;      input.cpyToDev();
+          // 2) convolution
+          const double alpha=1.0, beta=0.0;
+          CHK_CUDNN(cudnnConvolutionForward(
+              _handle, &alpha,
+              _xDesc, input.getDevPointer(),
+              _wDesc, kernel.getDevPointer(),
+              _convDesc, _bestAlgo,
+              _workspace, _workspaceBytes,
+              &beta,    _yDesc, output.getDevPointer()));
+          // 3) bias 추가
+          CHK_CUDNN(cudnnAddTensor(
+              _handle, &alpha,
+              _biasDesc, bias.getDevPointer(),
+              &alpha,
+              _yDesc, output.getDevPointer()));
+          return output;  // (N × K×Ho×Wo)
         }
+    
+        // 역전파 (호스트에서 호출)
+        // next==nullptr 이면 맨 앞 레이어
+        // dY: Loss 에서 넘어온 dL/dZ  act_deriv: 활성화 함수 도함수(z)
+        d2::d_matrix_2<double> backward(PerceptronLayer* next, const d2::d_matrix_2<double>& dY_dev, const d2::d_matrix_2<double>& act_deriv_dev)
+        {
+          // 1) 외부 델타 or 다음 레이어 전파 델타 준비
+          if(next){
+            // 다음 레이어의 convLayer::delta 를 가져와서
+            delta = d2::matrixMP(next->getDelta(), next->getWeight().transpose());  
+          } else {
+            delta = dY_dev;
+          }
+          // 2) 활성화 미분 곱하기
+          int Rr=delta.getRow(), Cc=delta.getCol();
+          d2::HPinKernel<<<grid2d(Rr,Cc), block2d()>>>(delta.getDevPointer(), act_deriv_dev.getDevPointer(), delta.getDevPointer(), Rr, Cc);
+          cudaDeviceSynchronize();
+          cudaError_t err = cudaGetLastError();
+          if (err != cudaSuccess) {
+              std::cerr << "[ERROR] HPinKernel failed at convLayer::backward(): "
+                        << cudaGetErrorString(err) << std::endl;
+              std::abort();
+          }
+    
+          // 3) gradW 계산
+          const double alpha=1.0, beta=0.0;
+          CHK_CUDNN(cudnnConvolutionBackwardFilter(
+              _handle, &alpha,
+              _xDesc, input.getDevPointer(),
+              _yDesc, delta.getDevPointer(),
+              _convDesc,
+              CUDNN_CONVOLUTION_BWD_FILTER_ALGO_0,
+              _workspace, _workspaceBytes,
+              &beta,
+              _wDesc, gradW.getDevPointer()));
+    
+          // 4) gradB 계산
+          CHK_CUDNN(cudnnConvolutionBackwardBias(
+              _handle, &alpha,
+              _yDesc, delta.getDevPointer(),
+              &beta,
+              _biasDesc, gradB.getDevPointer()));
+    
+          // 5) dX 계산 (이전 레이어로 전파할 델타)
+          CHK_CUDNN(cudnnConvolutionBackwardData(
+              _handle, &alpha,
+              _wDesc, kernel.getDevPointer(),
+              _yDesc, delta.getDevPointer(),
+              _convDesc,
+              CUDNN_CONVOLUTION_BWD_DATA_ALGO_0,
+              _workspace, _workspaceBytes,
+              &beta,
+              _xDesc, input.getDevPointer()));
+    
+          // 6) 파라미터 업데이트
+          opt->update(kernel, bias, gradW, gradB);
+    
+          // 최종적으로 이전 레이어로 보낼 델타 반환
+          // (already device 에 있으므로 Host 로 안 옮겨도 됩니다)
+          return delta;
+        }
+    
+        ~convLayer(){
+          if(_workspace)  cudaFree(_workspace);
+          cudnnDestroyConvolutionDescriptor(_convDesc);
+          cudnnDestroyFilterDescriptor     (_wDesc);
+          cudnnDestroyTensorDescriptor     (_xDesc);
+          cudnnDestroyTensorDescriptor     (_yDesc);
+          cudnnDestroyTensorDescriptor     (_biasDesc);
+          cudnnDestroy(_handle);
+        }
+    
+        // 필요하다면 getter들도 추가
+        const d2::d_matrix_2<double>& getOutput() const { return output; }
+        const d2::d_matrix_2<double>& getDelta () const { return delta;  }
+        const d2::d_matrix_2<double>& getGradW () const { return gradW;  }
+        const d2::d_matrix_2<double>& getGradB () const { return gradB;  }
     };
 
 
