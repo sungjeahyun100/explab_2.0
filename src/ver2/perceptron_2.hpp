@@ -1,4 +1,10 @@
 #include <ver2/d_matrix_2.hpp>
+#include <thrust/device_ptr.h>
+#include <thrust/transform_reduce.h>
+#include <thrust/reduce.h>
+#include <thrust/iterator/counting_iterator.h>
+#include <thrust/execution_policy.h>
+#include <thrust/functional.h>
 #include <cudnn.h>
 #include <memory>
 
@@ -324,40 +330,65 @@ namespace perceptron_2 {
     // 손실값 반환
     // MSE: L = 1/n Σ(y-p)^2
     // CrossEntropy: L = -Σ y log(softmax(p))
-    double LossLayer::getLoss(){
-        switch (Loss)
-        {
+    double LossLayer::getLoss() {
+        switch (Loss) {
             case LossType::MSE: {
-                // MSE: L = 1/N Σ (output − target)², 전부 호스트 계산
                 int N = output.getRow();
-                double sum = 0.0;
-                for (int i = 0; i < N; ++i) {
-                    double diff = output(i, 0) - target(i, 0);
-                    sum += diff * diff;
-                }
+    
+                auto idx_begin = thrust::make_counting_iterator(0);
+                auto idx_end   = thrust::make_counting_iterator(N);
+    
+                thrust::device_ptr<double> o_dev(output.getDevPointer());
+                thrust::device_ptr<double> t_dev(target.getDevPointer());
+                double* o_ptr = thrust::raw_pointer_cast(o_dev);
+                double* t_ptr = thrust::raw_pointer_cast(t_dev);
+    
+                double sum = thrust::transform_reduce(
+                    thrust::device,
+                    idx_begin, idx_end,
+    
+                    [o_ptr, t_ptr] __device__ (int i) {
+                        double d = o_ptr[i] - t_ptr[i];
+                        return d * d;
+                    },
+    
+                    0.0,
+                    thrust::plus<double>()
+                );
                 return sum / static_cast<double>(N);
             }
     
             case LossType::CrossEntropy: {
                 int N = output.getRow();
-                // 2) 소프트맥스 확률 계산
+                // 먼저 소프트맥스
                 d2::d_matrix_2<double> p = softmax(output);
     
-                // 3) 크로스엔트로피 손실: L = -1/N Σ y_i * log(p_i)
-                double loss = 0.0;
-                for (int i = 0; i < N; ++i) {
-                    double yi = target(i, 0);
-                    double pi = std::min(std::max(p(i, 0), 1e-12), 1.0);  // 클리핑
-                    loss -= yi * std::log(pi);
-                }
-                return loss / static_cast<double>(N);
+                auto idx_begin = thrust::make_counting_iterator(0);
+                auto idx_end   = thrust::make_counting_iterator(N);
+    
+                thrust::device_ptr<double> p_dev(p.getDevPointer());
+                thrust::device_ptr<double> t_dev(target.getDevPointer());
+                double* p_ptr = thrust::raw_pointer_cast(p_dev);
+                double* t_ptr = thrust::raw_pointer_cast(t_dev);
+    
+                double sum = thrust::transform_reduce(
+                    thrust::device,
+                    idx_begin, idx_end,
+    
+                    [p_ptr, t_ptr] __device__ (int i) {
+                        return -t_ptr[i] * ::log(p_ptr[i]);
+                    },
+    
+                    0.0,
+                    thrust::plus<double>()
+                );
+                return sum / static_cast<double>(N);
             }
     
             default:
                 throw std::runtime_error("Unsupported LossType in getLoss");
         }
     }
-    
     // 손실 미분 반환
     // MSE: dL/dz = 2(y-p)
     // CrossEntropy: dL/dz = softmax(p) - y
@@ -402,10 +433,7 @@ namespace perceptron_2 {
         void*                           _workspace;
     
     public:
-        convLayer(int N, int C, int H, int W,    // input dims
-                  int K, int R, int S,            // filter dims
-                  int pad_h, int pad_w,
-                  int stride_h, int stride_w)
+        convLayer(int N, int C, int H, int W, int K, int R, int S, int pad_h, int pad_w, int stride_h, int stride_w)
         {
             // 1) cuDNN 핸들 & 디스크립터 생성
             cudnnCreate(&_handle);
@@ -415,40 +443,18 @@ namespace perceptron_2 {
             cudnnCreateConvolutionDescriptor(&_convDesc);
     
             // 2) 디스크립터 설정
-            cudnnSetTensor4dDescriptor(_xDesc,
-                                       CUDNN_TENSOR_NCHW,
-                                       CUDNN_DATA_FLOAT,
-                                       N, C, H, W);
-            cudnnSetFilter4dDescriptor(_wDesc,
-                                       CUDNN_DATA_FLOAT,
-                                       CUDNN_TENSOR_NCHW,
-                                       K, C, R, S);
-            cudnnSetConvolution2dDescriptor(_convDesc,
-                                            pad_h, pad_w,
-                                            stride_h, stride_w,
-                                            1, 1,
-                                            CUDNN_CROSS_CORRELATION,
-                                            CUDNN_DATA_FLOAT);
+            cudnnSetTensor4dDescriptor(_xDesc, CUDNN_TENSOR_NCHW, CUDNN_DATA_FLOAT, N, C, H, W);
+            cudnnSetFilter4dDescriptor(_wDesc, CUDNN_DATA_FLOAT, CUDNN_TENSOR_NCHW, K, C, R, S);
+            cudnnSetConvolution2dDescriptor(_convDesc, pad_h, pad_w, stride_h, stride_w, 1, 1, CUDNN_CROSS_CORRELATION, CUDNN_DATA_FLOAT);
             // 출력 크기 계산
             int outN, outC, outH, outW;
-            cudnnGetConvolution2dForwardOutputDim(
-                _convDesc, _xDesc, _wDesc,
-                &outN, &outC, &outH, &outW);
-            cudnnSetTensor4dDescriptor(_yDesc,
-                                       CUDNN_TENSOR_NCHW,
-                                       CUDNN_DATA_FLOAT,
-                                       outN, outC, outH, outW);
+            cudnnGetConvolution2dForwardOutputDim(_convDesc, _xDesc, _wDesc, &outN, &outC, &outH, &outW);
+            cudnnSetTensor4dDescriptor(_yDesc, CUDNN_TENSOR_NCHW, CUDNN_DATA_FLOAT, outN, outC, outH, outW);
     
             // 3) 가장 빠른 알고리즘 찾기 (v7 API)
             const int MAX_ALGOS = CUDNN_CONVOLUTION_FWD_ALGO_COUNT;
             _perfResults = new cudnnConvolutionFwdAlgoPerf_t[MAX_ALGOS];
-            cudnnGetConvolutionForwardAlgorithm_v7(
-                _handle,
-                _xDesc, _wDesc, _convDesc, _yDesc,
-                MAX_ALGOS,
-                &_returnedAlgoCount,
-                _perfResults
-            );
+            cudnnGetConvolutionForwardAlgorithm_v7( _handle, _xDesc, _wDesc, _convDesc, _yDesc, MAX_ALGOS, &_returnedAlgoCount, _perfResults);
             _bestAlgo       = _perfResults[0].algo;
             _workspaceBytes = _perfResults[0].memory;
     
@@ -463,52 +469,16 @@ namespace perceptron_2 {
         // forward 호출
         void forward(const float* x, const float* w, float* y) {
             const float alpha = 1.0f, beta = 0.0f;
-            cudnnConvolutionForward(
-                _handle,
-                &alpha, _xDesc, x,
-                        _wDesc, w,
-                _convDesc,
-                _bestAlgo,
-                _workspace, _workspaceBytes,
-                &beta,  _yDesc, y
-            );
+            cudnnConvolutionForward(_handle, &alpha, _xDesc, x, _wDesc, w, _convDesc, _bestAlgo, _workspace, _workspaceBytes, &beta,  _yDesc, y);
         }
 
-        void backward(const float* x,      // forward 에 사용된 입력
-                      const float* w,      // forward 에 사용된 필터
-                      const float* dY,     // 상위 레이어로부터 받은 gradient
-                      float* dX,           // 출력: 입력에 대한 gradient
-                      float* dW)           // 출력: 필터에 대한 gradient
+        void backward(const float* x, const float* w, const float* dY, float* dX, float* dW)           // 출력: 필터에 대한 gradient
         {
             const float alpha = 1.0f, beta = 0.0f;
-        
-            // 1) dW 계산
-            //    알고리즘은 미리 _bestAlgoFilter 등에 저장해 두어도 되고,
-            //    필요 시 v7 API 로 매번 찾아도 됩니다.
-            cudnnConvolutionBackwardFilter(
-                _handle,
-                &alpha,
-                _xDesc, x,
-                _yDesc, dY,
-                _convDesc,
-                /* algo = */ CUDNN_CONVOLUTION_BWD_FILTER_ALGO_1,
-                _workspace, _workspaceBytes,
-                &beta,
-                _wDesc, dW
-            );
-        
+            // 1) dW 계산.
+            cudnnConvolutionBackwardFilter( _handle, &alpha, _xDesc, x, _yDesc, dY, _convDesc, CUDNN_CONVOLUTION_BWD_FILTER_ALGO_1, _workspace, _workspaceBytes, &beta, _wDesc, dW);
             // 2) dX 계산
-            cudnnConvolutionBackwardData(
-                _handle,
-                &alpha,
-                _wDesc, w,
-                _yDesc, dY,
-                _convDesc,
-                /* algo = */ CUDNN_CONVOLUTION_BWD_DATA_ALGO_1,
-                _workspace, _workspaceBytes,
-                &beta,
-                _xDesc, dX
-            );
+            cudnnConvolutionBackwardData(_handle, &alpha, _wDesc, w, _yDesc, dY, _convDesc, CUDNN_CONVOLUTION_BWD_DATA_ALGO_1, _workspace, _workspaceBytes, &beta, _xDesc, dX);
         }
         
     

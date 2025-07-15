@@ -72,6 +72,7 @@ class XORsolver_Adam{
                 XORtarget[i].cpyToDev();
             }
         }
+        
         std::pair<d2::d_matrix_2<double>, double> forward(const d2::d_matrix_2<double> train_input, const d2::d_matrix_2<double> target){
             input_layer.feedforward(train_input);
             inAct.pushInput(input_layer.getOutput()); inAct.Active();
