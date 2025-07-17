@@ -35,13 +35,13 @@ class XORsolver_Adam{
 
     public:
         XORsolver_Adam(int in, int h1, int h2, int out, d2::InitType init, p2::LossType l, p2::ActType act, double lr, int n) : 
-        opt1(h1, in, lr), opt2(h2, h1, lr), opt3(out, h2, lr),
+        opt1(in, h1, lr), opt2(h1, h2, lr), opt3(h2, out, lr),
         input_layer(n, in, h1, &opt1, init),
-        inAct(h1, n, act), 
+        inAct(n, h1, act), 
         hidden1_layer(n, h1, h2, &opt2, init),
-        hidden1Act(h2, n, act), 
+        hidden1Act(n, h2, act), 
         output_layer(n, h2, out, &opt3, init),
-        outputAct(out, n, act), loss(out, n, l)
+        outputAct(n, out, act), loss(n, out, l)
         {}
         
         std::pair<d2::d_matrix_2<double>, double> forward(const d2::d_matrix_2<double> train_input, const d2::d_matrix_2<double> target){

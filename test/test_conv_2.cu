@@ -29,26 +29,26 @@ public:
 
       // conv1: N=bs, C=1, H=W=28, K=8, R=S=3, pad=1, stride=1
       conv1_opt(1*3*3, 8, 0.001),
-      conv1Act(8, bs, p2::ActType::ReLU),
+      conv1Act(bs, 8, p2::ActType::ReLU),
       conv1(bs,1,28,28,  8,3,3, 1,1, 1,1, &conv1_opt),
 
       // conv2: N=bs, C=8, H=W=28, K=16, R=S=3, pad=1, stride=2 → out:16×14×14
       conv2_opt(8*3*3,16, 0.001),
-      conv2Act(16, bs, p2::ActType::ReLU),
+      conv2Act(bs, 16, p2::ActType::ReLU),
       conv2(bs,8,28,28, 16,3,3, 1,1, 2,2, &conv2_opt),
 
       // fc1: 16*14*14 → 128
       fc1_opt(16*14*14,128, 0.001),
-      fc1Act(128, bs, p2::ActType::ReLU),
+      fc1Act(bs, 128, p2::ActType::ReLU),
       fc1(bs, 16*14*14, 128, &fc1_opt, d2::InitType::He),
 
       // fc2: 128 → 10 (클래스 개수)
       fc2_opt(128,10,      0.001),
-      fc2Act(10,  bs, p2::ActType::Identity),
+      fc2Act(bs,  10, p2::ActType::Identity),
       fc2(bs, 128, 10, &fc2_opt, d2::InitType::He),
 
       // 크로스엔트로피 손실
-      loss(10, bs, p2::LossType::CrossEntropy)
+      loss(bs, 10, p2::LossType::CrossEntropy)
     {}
 
     // 한 배치에 대한 순전파

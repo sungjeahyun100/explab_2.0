@@ -1,15 +1,11 @@
-FROM ubuntu:24.04
-
-# 비대화형 apt
-ENV DEBIAN_FRONTEND=noninteractive \
-    CC=gcc \
-    CXX=g++
+FROM nvidia/cuda:12.8.1-cudnn-devel-ubuntu24.04
 
 RUN apt-get update \
+ && DEBIAN_FRONTEND=noninteractive \
  && apt-get install -y --no-install-recommends \
-      nvidia-cuda-toolkit \
       build-essential \
       gnuplot \
+      libcurl4-openssl-dev \
  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /workspace

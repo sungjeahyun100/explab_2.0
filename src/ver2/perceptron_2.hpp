@@ -382,7 +382,7 @@ namespace perceptron_2 {
                     thrust::device,
                     idx_begin, idx_end,
     
-                    [o_ptr, t_ptr] __device__ (int i) {
+                    [o_ptr, t_ptr] __host__ __device__ (int i) -> double {
                         double d = o_ptr[i] - t_ptr[i];
                         return d * d;
                     },
@@ -410,7 +410,7 @@ namespace perceptron_2 {
                     thrust::device,
                     idx_begin, idx_end,
     
-                    [p_ptr, t_ptr] __device__ (int i) {
+                    [p_ptr, t_ptr] __host__ __device__ (int i) -> double {
                         return -t_ptr[i] * ::log(p_ptr[i]);
                     },
     
