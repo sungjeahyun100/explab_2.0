@@ -80,36 +80,66 @@ namespace perceptron_2 {
     class Adam : public optimizer {
         double lr, beta1, beta2, eps;
         int t;
-        d2::d_matrix_2<double> mW, vW, mB, vB;
+        // weight: row×col, bias: 1×col
+        d2::d_matrix_2<double> mW, vW;  // same shape as W
+        d2::d_matrix_2<double> mB, vB;  // 1×col
         cudaStream_t st1;
     public:
         Adam(int row, int col, double lr_, double b1=0.9, double b2=0.999, double e=1e-8)
-            : lr(lr_), beta1(b1), beta2(b2), eps(e), t(0),
-              mW(row, col), vW(row, col), mB(row,1), vB(row,1) {
-            mW.fill(0.0); vW.fill(0.0); mB.fill(0.0); vB.fill(0.0);
+          : lr(lr_), beta1(b1), beta2(b2), eps(e), t(0),
+            mW(row, col), vW(row, col),
+            mB(1,     col), vB(1,     col)  // bias buffers
+        {
+            mW.fill(0.0);  vW.fill(0.0);
+            mB.fill(0.0);  vB.fill(0.0);
             cudaStreamCreate(&st1);
         }
-        void update(d2::d_matrix_2<double>& W, d2::d_matrix_2<double>& B, const d2::d_matrix_2<double>& gW, const d2::d_matrix_2<double>& gB) override {
-            t++;
-
+    
+        void update(
+            d2::d_matrix_2<double>& W,
+            d2::d_matrix_2<double>& B,
+            const d2::d_matrix_2<double>& gW,
+            const d2::d_matrix_2<double>& gB
+        ) override {
+            ++t;
             double bc1 = 1.0 - std::pow(beta1, t);
             double bc2 = 1.0 - std::pow(beta2, t);
-
+    
             int rows = W.getRow(), cols = W.getCol();
-            int N = rows * cols;
-            int N_B = B.getRow()*B.getCol();
-            
+            int Nw   = rows * cols;  // total weight elements
+            int Nb   = cols;         // total bias elements (1×col)
+    
             const int blockSize = 256;
-            int gridSize = (N + blockSize - 1) / blockSize;
-            CalcAdam<<<gridSize, blockSize, 0, st1>>>(gW.getDevPointer(), W.getDevPointer(), mW.getDevPointer(), vW.getDevPointer(), beta1, beta2, lr, eps, bc1, bc2, N);
-            CalcAdam<<<gridSize, blockSize, 0, st1>>>(gB.getDevPointer(), B.getDevPointer(), mB.getDevPointer(), vB.getDevPointer(), beta1, beta2, lr, eps, bc1, bc2, N_B);
+            int gridW = (Nw + blockSize - 1) / blockSize;
+            int gridB = (Nb + blockSize - 1) / blockSize;
+    
+            // 1) weight 업데이트
+            CalcAdam<<<gridW, blockSize, 0, st1>>>(
+                gW.getDevPointer(),
+                W.getDevPointer(),
+                mW.getDevPointer(),
+                vW.getDevPointer(),
+                beta1, beta2, lr, eps,
+                bc1, bc2,
+                Nw
+            );
+    
+            // 2) bias 업데이트 (이제 B는 1×col 이므로 N_B = cols)
+            CalcAdam<<<gridB, blockSize, 0, st1>>>(
+                gB.getDevPointer(),
+                B.getDevPointer(),
+                mB.getDevPointer(),
+                vB.getDevPointer(),
+                beta1, beta2, lr, eps,
+                bc1, bc2,
+                Nb
+            );
+    
             cudaStreamSynchronize(st1);
         }
+    
         ~Adam() noexcept {
-            cudaError_t err = cudaStreamDestroy(st1);
-            if (err != cudaSuccess) {
-                std::cerr << "[CUDA ERROR in Adam::~Adam] " << cudaGetErrorString(err) << std::endl;
-            }
+            cudaStreamDestroy(st1);
         }
     };
 
@@ -197,7 +227,7 @@ namespace perceptron_2 {
         }
     };
 
-    // ActivateLayer-------------------------------------------------------------------------------------------------------------------
+    // ActivateLayer----------------------------------------------------------------------------------------------------------------------------
 
     // 활성화 계층
     // 사용법: pushInput()으로 입력, Active()로 활성화 적용, getOutput()으로 결과 반환
@@ -433,6 +463,8 @@ namespace perceptron_2 {
         cudnnFilterDescriptor_t      _wDesc;
         cudnnConvolutionDescriptor_t _convDesc;
         cudnnConvolutionFwdAlgo_t    _bestAlgo;
+        cudnnConvolutionBwdDataAlgo_t _bestBwdDAlgo;
+        cudnnConvolutionBwdFilterAlgo_t _bestBwdFAlgo;
         size_t                       _workspaceBytes;
         void*                        _workspace = nullptr;
     
@@ -462,40 +494,75 @@ namespace perceptron_2 {
           , gradB(bias.getRow(), bias.getCol())
           , opt(o)
         {
-          // — cuDNN 생략 없이 에러 체크까지 —
-          CHK_CUDNN(cudnnCreate(&_handle));
-          CHK_CUDNN(cudnnCreateTensorDescriptor(&_xDesc));
-          CHK_CUDNN(cudnnCreateTensorDescriptor(&_yDesc));
-          CHK_CUDNN(cudnnCreateTensorDescriptor(&_biasDesc));
-          CHK_CUDNN(cudnnCreateFilterDescriptor(&_wDesc));
-          CHK_CUDNN(cudnnCreateConvolutionDescriptor(&_convDesc));
-    
-          CHK_CUDNN(cudnnSetTensor4dDescriptor(_xDesc,
-              CUDNN_TENSOR_NCHW, CUDNN_DATA_DOUBLE, N,C,H,W));
-          CHK_CUDNN(cudnnSetFilter4dDescriptor(_wDesc,
-              CUDNN_DATA_DOUBLE, CUDNN_TENSOR_NCHW, K,C,R,S));
-          CHK_CUDNN(cudnnSetConvolution2dDescriptor(_convDesc,
-              pad_h, pad_w, stride_h, stride_w, 1,1,
-              CUDNN_CROSS_CORRELATION, CUDNN_DATA_DOUBLE));
-    
-          int outN,outC,outH,outW;
-          CHK_CUDNN(cudnnGetConvolution2dForwardOutputDim(
-              _convDesc, _xDesc, _wDesc, &outN,&outC,&outH,&outW));
-          CHK_CUDNN(cudnnSetTensor4dDescriptor(_yDesc,
-              CUDNN_TENSOR_NCHW, CUDNN_DATA_DOUBLE, outN,outC,outH,outW));
-          CHK_CUDNN(cudnnSetTensor4dDescriptor(_biasDesc,
-              CUDNN_TENSOR_NCHW, CUDNN_DATA_DOUBLE, 1,outC,1,1));
-    
-          // fastest algo 한 개만 뽑기
-          int algoCount;
-          cudnnConvolutionFwdAlgoPerf_t perf;
-          CHK_CUDNN(cudnnGetConvolutionForwardAlgorithm_v7(
-              _handle, _xDesc, _wDesc, _convDesc, _yDesc,
-              1, &algoCount, &perf));
-          _bestAlgo      = perf.algo;
-          _workspaceBytes= perf.memory;
-          if(_workspaceBytes>0)
-            cudaMalloc(&_workspace, _workspaceBytes);
+            // — cuDNN 생략 없이 에러 체크까지 —
+            CHK_CUDNN(cudnnCreate(&_handle));
+            CHK_CUDNN(cudnnCreateTensorDescriptor(&_xDesc));
+            CHK_CUDNN(cudnnCreateTensorDescriptor(&_yDesc));
+            CHK_CUDNN(cudnnCreateTensorDescriptor(&_biasDesc));
+            CHK_CUDNN(cudnnCreateFilterDescriptor(&_wDesc));
+            CHK_CUDNN(cudnnCreateConvolutionDescriptor(&_convDesc));
+      
+            CHK_CUDNN(cudnnSetTensor4dDescriptor(_xDesc,
+                CUDNN_TENSOR_NCHW, CUDNN_DATA_DOUBLE, N,C,H,W));
+            CHK_CUDNN(cudnnSetFilter4dDescriptor(_wDesc,
+                CUDNN_DATA_DOUBLE, CUDNN_TENSOR_NCHW, K,C,R,S));
+            CHK_CUDNN(cudnnSetConvolution2dDescriptor(_convDesc,
+                pad_h, pad_w, stride_h, stride_w, 1,1,
+                CUDNN_CROSS_CORRELATION, CUDNN_DATA_DOUBLE));
+      
+            int outN,outC,outH,outW;
+            CHK_CUDNN(cudnnGetConvolution2dForwardOutputDim(
+                _convDesc, _xDesc, _wDesc, &outN,&outC,&outH,&outW));
+            CHK_CUDNN(cudnnSetTensor4dDescriptor(_yDesc,
+                CUDNN_TENSOR_NCHW, CUDNN_DATA_DOUBLE, outN,outC,outH,outW));
+            CHK_CUDNN(cudnnSetTensor4dDescriptor(_biasDesc,
+                CUDNN_TENSOR_NCHW, CUDNN_DATA_DOUBLE, 1,outC,1,1));
+      
+            // fastest algo 한 개만 뽑기 (수정:알고리즘 여려개 뽐기로 수정함)
+            int algoCount = 0;
+            cudnnConvolutionFwdAlgoPerf_t perf[ CUDNN_CONVOLUTION_FWD_ALGO_COUNT ];
+            CHK_CUDNN(cudnnGetConvolutionForwardAlgorithm_v7(_handle, _xDesc, _wDesc, _convDesc, _yDesc, CUDNN_CONVOLUTION_FWD_ALGO_COUNT, &algoCount, perf));
+            _bestAlgo      = perf[0].algo;
+            _workspaceBytes= perf[0].memory;
+
+            cudnnConvolutionBwdFilterAlgoPerf_t perfF[ CUDNN_CONVOLUTION_BWD_FILTER_ALGO_COUNT ];
+            int returnedF = 0;
+            CHK_CUDNN(cudnnGetConvolutionBackwardFilterAlgorithm_v7(_handle, _xDesc, _yDesc, _convDesc, _wDesc, CUDNN_CONVOLUTION_BWD_FILTER_ALGO_COUNT, &returnedF, perfF));
+            _workspaceBytes  = max(_workspaceBytes, perfF[0].memory);
+  
+            cudnnConvolutionBwdDataAlgoPerf_t perfD[ CUDNN_CONVOLUTION_BWD_DATA_ALGO_COUNT ];
+            int returnedD = 0;
+            CHK_CUDNN(cudnnGetConvolutionBackwardDataAlgorithm_v7(_handle, _wDesc, _yDesc, _convDesc, _xDesc, CUDNN_CONVOLUTION_BWD_DATA_ALGO_COUNT, &returnedD, perfD));
+            _workspaceBytes  = max(_workspaceBytes, perfD[0].memory);
+
+            _bestBwdFAlgo = CUDNN_CONVOLUTION_BWD_FILTER_ALGO_0;  // 기본값
+            for(int i = 0; i < returnedF; ++i) {
+                if (perfF[i].status == CUDNN_STATUS_SUCCESS && perfF[i].memory <= _workspaceBytes) {
+                    _bestBwdFAlgo = perfF[i].algo;
+                    _workspaceBytes = std::max(_workspaceBytes, perfF[i].memory);
+                    break;
+                }
+            }
+            _bestBwdDAlgo = CUDNN_CONVOLUTION_BWD_DATA_ALGO_0;  // 기본값
+            for(int i = 0; i < returnedD; ++i) {
+                if (perfD[i].status == CUDNN_STATUS_SUCCESS && perfD[i].memory <= _workspaceBytes) {
+                    _bestBwdDAlgo = perfD[i].algo;
+                    _workspaceBytes = std::max(_workspaceBytes, perfD[i].memory);
+                    break;
+                }
+            }
+  
+            if (_workspaceBytes > 0) {
+              cudaError_t err = cudaMalloc(&_workspace, _workspaceBytes);
+              if (err != cudaSuccess) {
+                throw std::runtime_error(std::string("cudaMalloc failed for workspace: ") + cudaGetErrorString(err));
+              }
+            }
+  
+            std::cout << "[conv] fwdAlgo=" << _bestAlgo
+            << " bwdF=" << _bestBwdFAlgo
+            << " bwdD=" << _bestBwdDAlgo
+            << " workspace=" << (_workspaceBytes/1024/1024) << "MB\n";
         }
 
         inline dim3 grid2d(int rows, int cols) {
@@ -511,7 +578,7 @@ namespace perceptron_2 {
         // x: (N × C×H×W)  kernel: (K × C×R×S)  bias: (1×K×1×1)
         d2::d_matrix_2<double> forward(const d2::d_matrix_2<double>& x_dev) {
           // 1) 입력 복사
-          input = x_dev;      input.cpyToDev();
+          input = x_dev;
           // 2) convolution
           const double alpha=1.0, beta=0.0;
           CHK_CUDNN(cudnnConvolutionForward(
@@ -559,8 +626,7 @@ namespace perceptron_2 {
               _handle, &alpha,
               _xDesc, input.getDevPointer(),
               _yDesc, delta.getDevPointer(),
-              _convDesc,
-              CUDNN_CONVOLUTION_BWD_FILTER_ALGO_0,
+              _convDesc, _bestBwdFAlgo,
               _workspace, _workspaceBytes,
               &beta,
               _wDesc, gradW.getDevPointer()));
@@ -577,8 +643,7 @@ namespace perceptron_2 {
               _handle, &alpha,
               _wDesc, kernel.getDevPointer(),
               _yDesc, delta.getDevPointer(),
-              _convDesc,
-              CUDNN_CONVOLUTION_BWD_DATA_ALGO_0,
+              _convDesc, _bestBwdDAlgo,
               _workspace, _workspaceBytes,
               &beta,
               _xDesc, input.getDevPointer()));
@@ -594,10 +659,10 @@ namespace perceptron_2 {
         ~convLayer(){
           if(_workspace)  cudaFree(_workspace);
           cudnnDestroyConvolutionDescriptor(_convDesc);
-          cudnnDestroyFilterDescriptor     (_wDesc);
-          cudnnDestroyTensorDescriptor     (_xDesc);
-          cudnnDestroyTensorDescriptor     (_yDesc);
-          cudnnDestroyTensorDescriptor     (_biasDesc);
+          cudnnDestroyFilterDescriptor(_wDesc);
+          cudnnDestroyTensorDescriptor(_xDesc);
+          cudnnDestroyTensorDescriptor(_yDesc);
+          cudnnDestroyTensorDescriptor(_biasDesc);
           cudnnDestroy(_handle);
         }
     

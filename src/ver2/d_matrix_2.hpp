@@ -173,6 +173,30 @@ namespace d_matrix_ver2{
             }
             return *this;
         }
+
+        d_matrix_2(d_matrix_2&& other) noexcept
+          : row(other.row),
+            col(other.col),
+            d_data(other.d_data),
+            h_data(std::move(other.h_data))
+        {
+            other.d_data = nullptr;
+            other.row = other.col = 0;
+        }
+    
+        // 이동 대입자
+        d_matrix_2& operator=(d_matrix_2&& other) noexcept {
+            if (this != &other) {
+                if (d_data) cudaFree(d_data);
+                row    = other.row;
+                col    = other.col;
+                d_data = other.d_data;
+                h_data = std::move(other.h_data);
+                other.d_data = nullptr;
+                other.row = other.col = 0;
+            }
+            return *this;
+        }
     
         bool operator==(const d_matrix_2<T>& other) const {
             if(other.col != col || other.row != row) return false;
@@ -196,12 +220,21 @@ namespace d_matrix_ver2{
             //if (!host_valid) throw std::runtime_error("Host data invalid; call toHost() first");
             return h_data[r * col + c];
         }
-    
+
+        /* 기존 소멸자
         ~d_matrix_2() noexcept {
             cudaError_t err = cudaFree(d_data);
             if (err != cudaSuccess) {
                 std::cerr << "[CUDA ERROR in destructor] " << cudaGetErrorString(err) 
                           << " (\"~d_matrix_2()\")" << std::endl;
+            }
+        }
+        */
+        ~d_matrix_2() noexcept {
+            if (d_data) {
+                // cudaFree 가 에러를 반환해도 무시만 합니다.
+                cudaError_t err = cudaFree(d_data);
+                (void)err;
             }
         }
     
