@@ -35,7 +35,7 @@ class XORsolver_Adam{
 
     public:
         XORsolver_Adam(int in, int h1, int h2, int out, d2::InitType init, p2::LossType l, p2::ActType act, double lr, int n) : 
-        opt1(in, h1, lr), opt2(h1, h2, lr), opt3(h2, out, lr),
+        opt1(h1, in, lr), opt2(h2, h1, lr), opt3(out, h2, lr),
         input_layer(n, in, h1, &opt1, init),
         inAct(n, h1, act), 
         hidden1_layer(n, h1, h2, &opt2, init),
