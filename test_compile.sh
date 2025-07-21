@@ -6,18 +6,18 @@ BUILD_DIR="$PROJECT_ROOT/build"
 mkdir -p "$BUILD_DIR"
 
 
-nvcc -std=c++20 \
-    -G \
-    -g \
-    -expt-extended-lambda \
-    -I "$PROJECT_ROOT/src" \
-    "$PROJECT_ROOT/test/test_ver2.cu" \
-    -o "$BUILD_DIR/test_per" \
-    -lcurl \
-    -lcurand \
-    -lcudnn \
-    -Xcompiler="-pthread"
-echo "✅ build/test_per 빌드 완료"
+#nvcc -std=c++20 \
+#    -G \
+#    -g \
+#    -expt-extended-lambda \
+#    -I "$PROJECT_ROOT/src" \
+#    "$PROJECT_ROOT/test/test_ver2.cu" \
+#    -o "$BUILD_DIR/test_per" \
+#    -lcurl \
+#    -lcurand \
+#    -lcudnn \
+#    -Xcompiler="-pthread"
+#echo "✅ build/test_per 빌드 완료"
 
 nvcc -std=c++20 \
     -G \

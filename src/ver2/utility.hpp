@@ -7,13 +7,26 @@
 #include <ver2/d_matrix_2.hpp>
 #include <stdexcept>
 
+const std::string GRAPH_PATH = "../graph";
+
+std::string getCurrentTimestamp()
+{
+    auto now = std::chrono::system_clock::now();
+    std::time_t t_now = std::chrono::system_clock::to_time_t(now);
+    std::tm tm_now = *std::localtime(&t_now);
+
+    std::ostringstream oss;
+    oss << std::put_time(&tm_now, "%Y-%m-%d_%H%M%S");
+    return oss.str();
+}
+
 void printProgressBar(int current, int total, std::chrono::steady_clock::time_point startTime, std::string processname) {
     int width = 50;
     float progress = static_cast<float>(current) / total;
     int pos = static_cast<int>(width * progress);
     
     auto elapsed = std::chrono::steady_clock::now() - startTime;
-    int elapsedSec = std::chrono::duration_cast<std::chrono::seconds>(elapsed).count();
+    int elapsedSec = std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count();
 
     std::cout << "[";
     for (int i = 0; i < width; ++i) {
@@ -23,7 +36,7 @@ void printProgressBar(int current, int total, std::chrono::steady_clock::time_po
     }
     std::cout << "] " << int(progress * 100.0) << "% ";
     std::cout << '[' << processname << ']';
-    std::cout << "(경과 시간: " << elapsedSec << " 초)\r";
+    std::cout << "(경과 시간: " << elapsedSec << " ms)\r";
     std::cout.flush();
 }
 
@@ -61,6 +74,8 @@ inline std::vector<std::vector<float>> load_mnist_images(const std::string& path
     return images;
 }
 
+
+
 // MNIST 레이블 로더: ubyte 파일에서 1D uint8_t 벡터로 변환
 inline std::vector<uint8_t> load_mnist_labels(const std::string& path) {
     std::ifstream in(path, std::ios::binary);
@@ -85,14 +100,14 @@ inline d_matrix_ver2::d_matrix_2<double> load_images_matrix(const std::string &p
     uint32_t W    = read_be32(in);
 
     // 행: 픽셀 개수, 열: 샘플 수
-    d_matrix_ver2::d_matrix_2<double> mat(H * W, N);
+    d_matrix_ver2::d_matrix_2<double> mat(N, H * W);
     // host 메모리 채우기
     for (uint32_t i = 0; i < N; ++i) {
         for (uint32_t p = 0; p < H*W; ++p) {
             uint8_t pixel;
             in.read(reinterpret_cast<char*>(&pixel), 1);
             if (!in) throw std::runtime_error("Unexpected EOF while reading MNIST pixels");
-            mat(p, i) = double(pixel) / 255.0f;
+            mat(i, p) = double(pixel) / 255.0f;
         }
     }
     // 디바이스로 복사
@@ -109,10 +124,10 @@ inline d_matrix_ver2::d_matrix_2<double> load_labels_matrix(const std::string &p
     uint32_t N = read_be32(in);
 
     // 행: 클래스 수, 열: 샘플 수
-    d_matrix_ver2::d_matrix_2<double> mat(num_classes, N);
+    d_matrix_ver2::d_matrix_2<double> mat(N, num_classes);
     // 호스트에 0으로 초기화
     for (int c = 0; c < num_classes; ++c) {
-        for (uint32_t i = 0; i < N; ++i) mat(c, i) = 0.0f;
+        for (uint32_t i = 0; i < N; ++i) mat(i, c) = 0.0l;
     }
     // 레이블 읽어 채우기
     for (uint32_t i = 0; i < N; ++i) {
@@ -120,7 +135,7 @@ inline d_matrix_ver2::d_matrix_2<double> load_labels_matrix(const std::string &p
         in.read(reinterpret_cast<char*>(&lbl), 1);
         if (!in) throw std::runtime_error("Unexpected EOF while reading MNIST labels");
         if (lbl >= num_classes) throw std::runtime_error("MNIST label out of range: " + std::to_string(lbl));
-        mat(static_cast<int>(lbl), i) = 1.0f;
+        mat(i, static_cast<int>(lbl)) = 1.0f;
     }
     // 디바이스로 복사
     mat.cpyToDev();

@@ -60,32 +60,54 @@ namespace d_matrix_ver2{
         }
     }
 
+    // 행 추출: A[where_r][0..cols-1] → C[0..cols-1]
     template<typename T>
-    __global__ void getMatrix_Row(T* d_A, T* d_C, int row, int col, int where_r){//가로열 반환
-        int x = blockIdx.x * blockDim.x + threadIdx.x; 
-        int y = blockIdx.y * blockDim.y + threadIdx.y; 
-
-        if(x < row && y < col) {
-            int idx = x*col+y;
-            if(x == where_r){
-                d_C[y] = d_A[idx];
-            }
-        }
-    }
-
-    template<typename T>
-    __global__ void getMatrix_Col(T* d_A, T* d_C, int row, int col, int where_c){//세로열 반환
-        int x = blockIdx.x * blockDim.x + threadIdx.x; 
-        int y = blockIdx.y * blockDim.y + threadIdx.y; 
-
-        if(x < row && y < col) {
-            int idx = x*col+y;
-            if(y == where_c){
-                d_C[x] = d_A[idx];
-            }
+    __global__ void extract_row(const T* __restrict__ A,
+                                T* __restrict__ C,
+                                int cols,
+                                int where_r)
+    {
+        int j = blockIdx.x * blockDim.x + threadIdx.x;
+        if (j < cols) {
+            C[j] = A[where_r * cols + j];
         }
     }
     
+    // 열 추출: A[0..rows-1][where_c] → C[0..rows-1]
+    template<typename T>
+    __global__ void extract_col(const T* __restrict__ A,
+                                T* __restrict__ C,
+                                int rows,
+                                int cols,
+                                int where_c)
+    {
+        int i = blockIdx.x * blockDim.x + threadIdx.x;
+        if (i < rows) {
+            C[i] = A[i * cols + where_c];
+        }
+    }
+
+    // A: (N × D), C: (B × D)  —  B = end-start
+    template<typename T>
+    __global__ void extract_batch(
+        const T* __restrict__ A,
+              T* __restrict__ C,
+        int        D,    // 열(피처) 개수
+        int        start,
+        int        end    // [start, end) 행을 뽑을 거니까
+    ) {
+        int idx = blockIdx.x*blockDim.x + threadIdx.x;
+        int B   = end - start;
+        int total = B * D;
+        if (idx >= total) return;
+    
+        int b = idx / D;   // 0 ≤ b < B
+        int d = idx % D;   // 0 ≤ d < D
+    
+        // C[b, d] = A[start + b, d]
+        C[b*D + d] = A[(start + b)*D + d];
+    }
+
     template<typename T>
     __global__ void reduceRows(const T* d_A, T* d_C, int rows, int cols) {
         int x = blockIdx.x * blockDim.x + threadIdx.x;
@@ -94,7 +116,7 @@ namespace d_matrix_ver2{
             for (int i = 0; i < rows; ++i) {
                 sum += d_A[i * cols + x];
             }
-            d_C[x] = sum;
+            d_C[x] = sum/rows;
         }
     }
     template<typename T>
@@ -301,7 +323,7 @@ namespace d_matrix_ver2{
         T const* end()   const noexcept { return h_data.data() + row*col; }
     
         d_matrix_2<T> flatten(){
-            d_matrix_2<T> V(*this);
+            d_matrix_2<T> V = *this;
             V.row = row*col;
             V.col = 1;
             return V;
@@ -316,22 +338,47 @@ namespace d_matrix_ver2{
             return V;
         }
     
-        d_matrix_2<T> transpose() const {
+        d_matrix_2<T> transpose(cudaStream_t str = 0) const {
             d_matrix_2<T> transposed(col, row);
             dim3 blockSize(32, 32);
             dim3 gridSize((row + blockSize.x - 1) / blockSize.x, (col + blockSize.y - 1) / blockSize.y);
-            TransInKernel<<<gridSize, blockSize>>>(d_data, transposed.getDevPointer(), row, col);
-            CHECK_CUDA(cudaDeviceSynchronize());
+            if(str == 0){
+                TransInKernel<<<gridSize, blockSize>>>(d_data, transposed.getDevPointer(), row, col);
+                CHECK_CUDA(cudaDeviceSynchronize());
+            }else {
+                TransInKernel<<<gridSize, blockSize, 0, str>>>(d_data, transposed.getDevPointer(), row, col);
+                CHECK_CUDA(cudaStreamSynchronize(str));
+            }
             return transposed;
         }
     
-        d_matrix_2<T> rotated180() const {
+        d_matrix_2<T> rotated180(cudaStream_t str = 0) const {
             d_matrix_2<T> rotated(row, col);
             dim3 blockSize(32, 32);
             dim3 gridSize((row + blockSize.x - 1) / blockSize.x, (col + blockSize.y - 1) / blockSize.y);
-            rotateInKernel<<<gridSize, blockSize>>>(d_data, rotated.getDevPointer(), row, col);
-            CHECK_CUDA(cudaDeviceSynchronize());
+            if(str == 0){
+                rotateInKernel<<<gridSize, blockSize>>>(d_data, rotated.getDevPointer(), row, col);
+                CHECK_CUDA(cudaDeviceSynchronize());
+            }else {
+                rotateInKernel<<<gridSize, blockSize, 0, str>>>(d_data, rotated.getDevPointer(), row, col);
+                CHECK_CUDA(cudaStreamSynchronize(str));
+            }
             return rotated;
+        }
+
+        d_matrix_2<T> getBatch(int batchSize, int begin_idx, cudaStream_t str = 0){
+            int sample_size = col;
+            d_matrix_2<T> result(batchSize, sample_size);
+            int threads = 256;
+            int blocks  = (row + threads - 1)/threads;
+            if(str == 0){
+                extract_batch<<<blocks, threads>>>(d_data, result.getDevPointer(), sample_size, begin_idx, begin_idx+batchSize);
+                CHECK_CUDA(cudaDeviceSynchronize());
+            }else {
+                extract_batch<<<blocks, threads, 0, str>>>(d_data, result.getDevPointer(), sample_size, begin_idx, begin_idx+batchSize);
+                CHECK_CUDA(cudaStreamSynchronize(str));
+            }
+            return result;
         }
     };
     
@@ -398,16 +445,22 @@ namespace d_matrix_ver2{
     }
     
     template <typename T>
-    d_matrix_2<T> zeroPedding(const d_matrix_2<T> &d_A, int size)
+    d_matrix_2<T> zeroPedding(const d_matrix_2<T> &d_A, int size, cudaStream_t str = 0)
     {
         d_matrix_2<double> C(d_A.getRow()+(size*2), d_A.getCol()+(size*2));
         dim3 blockSize(32, 32);
         dim3 gridSize((C.getRow() + blockSize.x - 1) / blockSize.x, (C.getCol() + blockSize.y - 1) / blockSize.y);
-        zeroPad<<<gridSize, blockSize>>>(d_A.getDevPointer(), C.getDevPointer(), d_A.getRow(), d_A.getCol(), C.getRow(), C.getCol());
-        cudaDeviceSynchronize();
+        if(str == 0){
+            zeroPad<<<gridSize, blockSize>>>(d_A.getDevPointer(), C.getDevPointer(), d_A.getRow(), d_A.getCol(), C.getRow(), C.getCol());
+            cudaDeviceSynchronize();
+        }else {
+            zeroPad<<<gridSize, blockSize, 0, str>>>(d_A.getDevPointer(), C.getDevPointer(), d_A.getRow(), d_A.getCol(), C.getRow(), C.getCol());
+            cudaStreamSynchronize(str);
+        }
         return C;
     }
     
+    //이 코드에서 버그 발견됨. 이유 밝혀내기 전까지는 쓰지 말 것.
     template<typename T, int TILE>
     __global__ void matmul_tiled(const T* __restrict__ A,
                                  const T* __restrict__ B,
@@ -457,16 +510,32 @@ namespace d_matrix_ver2{
             C[row * N + col] = sum;
         }
     }
+
+    template<typename T>
+    __global__ void HPinKernel_1dx(const T* __restrict__ d_A, const T* __restrict__ d_B, T* __restrict__ C, int row, int col){
+        int idx = blockDim.x*blockIdx.x+threadIdx.x;
+        if(idx >= row*col) return;
+        C[idx] = d_A[idx]*d_B[idx];
+    }
     
     template<typename T>
-    __global__ void HPinKernel(T* d_A, T* d_B, T* d_C, int row, int col) {
-        int x = blockIdx.x * blockDim.x + threadIdx.x;
-        int y = blockIdx.y * blockDim.y + threadIdx.y;
+    __global__ void HPinKernel(
+        const T* __restrict__ d_A,
+        const T* __restrict__ d_B,
+              T* __restrict__ d_C,
+        int rows,
+        int cols
+    ) {
+        int col = blockIdx.x * blockDim.x + threadIdx.x;
+        int row = blockIdx.y * blockDim.y + threadIdx.y;
     
-        if (x < row && y < col) {
-            d_C[x * col + y] = d_A[x * col + y] * d_B[x * col + y];
+        if (row < rows && col < cols) {
+            int idx = row * cols + col;
+            d_C[idx] = d_A[idx] * d_B[idx];
+            __syncthreads();
         }
     }
+
     
     template<typename T>
     d_matrix_2<T> HadamardProduct(const d_matrix_2<T>& d_A, const d_matrix_2<T>& d_B) {
@@ -495,7 +564,7 @@ namespace d_matrix_ver2{
     }
     
     template<typename T>
-    d_matrix_2<T> ScalaProduct(const d_matrix_2<T>& d_A, T scalar) {
+    d_matrix_2<T> ScalaProduct(const d_matrix_2<T>& d_A, T scalar, cudaStream_t str = 0) {
         int row = d_A.getRow();
         int col = d_A.getCol();
     
@@ -504,8 +573,13 @@ namespace d_matrix_ver2{
         dim3 blockSize(32, 32);
         dim3 gridSize((row + blockSize.x - 1) / blockSize.x, (col + blockSize.y - 1) / blockSize.y);
     
-        ScalainKernel<<<gridSize, blockSize>>>(d_A.getDevPointer(), scalar, C.getDevPointer(), row, col);
-        cudaDeviceSynchronize();
+        if(str == 0) {
+            ScalainKernel<<<gridSize, blockSize>>>(d_A.getDevPointer(), scalar, C.getDevPointer(), row, col);
+            cudaDeviceSynchronize();
+        }else{
+            ScalainKernel<<<gridSize, blockSize, 0, str>>>(d_A.getDevPointer(), scalar, C.getDevPointer(), row, col);
+            cudaStreamSynchronize(str);
+        }
         return C;
     }
     
@@ -526,7 +600,7 @@ namespace d_matrix_ver2{
     constexpr int TILE = 32;
     
     template<typename T>
-    d_matrix_2<T> matrixMP(const d_matrix_2<T>& A, const d_matrix_2<T>& B) {
+    d_matrix_2<T> matrixMP(const d_matrix_2<T>& A, const d_matrix_2<T>& B, cudaStream_t str = 0) {
         int M = A.getRow();
         int N = B.getCol();
         int K = A.getCol();  // A.cols == B.rows
@@ -538,8 +612,14 @@ namespace d_matrix_ver2{
         dim3 grid((N + TILE - 1) / TILE, (M + TILE - 1) / TILE);
     
         // Tiled matmul 커널 호출
-        matmul_tiled<T, TILE><<<grid, block>>>(A.getDevPointer(), B.getDevPointer(), C.getDevPointer(), M, N, K);
-        cudaDeviceSynchronize();
+        if(str == 0) {
+            MPinKernel<T><<<grid, block>>>(A.getDevPointer(), B.getDevPointer(), C.getDevPointer(), M, N, K);
+            cudaDeviceSynchronize();
+        }
+        else {
+            MPinKernel<T><<<grid, block, 0, str>>>(A.getDevPointer(), B.getDevPointer(), C.getDevPointer(), M, N, K);
+            cudaStreamSynchronize(str);
+        }
     
         return C;
     }
@@ -555,7 +635,7 @@ namespace d_matrix_ver2{
     }
     
     template<typename T>
-    d_matrix_2<T> matrixPlus(const d_matrix_2<T>& d_A, const d_matrix_2<T>& d_B){//마이너스는 이렇게: d_matrix_2<double> C = matrixPlus(A, ScalaProduct(B, -1));
+    d_matrix_2<T> matrixPlus(const d_matrix_2<T>& d_A, const d_matrix_2<T>& d_B, cudaStream_t str = 0){//마이너스는 이렇게: d_matrix_2<double> C = matrixPlus(A, ScalaProduct(B, -1));
         int row = d_A.getRow();
         int col = d_A.getCol();
     
@@ -564,8 +644,11 @@ namespace d_matrix_ver2{
         dim3 blockSize(32, 32);
         dim3 gridSize((row + blockSize.x - 1) / blockSize.x, (col + blockSize.y - 1) / blockSize.y);
     
-        PlusinKernel<<<gridSize, blockSize>>>(d_A.getDevPointer(), d_B.getDevPointer(), C.getDevPointer(), row, col);
-        cudaDeviceSynchronize();
+        if(str == 0) {
+            PlusinKernel<<<gridSize, blockSize>>>(d_A.getDevPointer(), d_B.getDevPointer(), C.getDevPointer(), row, col);
+            cudaDeviceSynchronize();
+        }
+        
     
         return C;
     }
@@ -708,7 +791,7 @@ namespace d_matrix_ver2{
      
     
     template<typename T, T (*ActivateFunc)(T)>
-    d_matrix_2<T> MatrixActivate(const d_matrix_2<T>& d_A){
+    d_matrix_2<T> MatrixActivate(const d_matrix_2<T>& d_A, cudaStream_t str = 0){
         int row = d_A.getRow();
         int col = d_A.getCol();
     
@@ -716,10 +799,14 @@ namespace d_matrix_ver2{
     
         dim3 blockSize(32, 32);
         dim3 gridSize((row + blockSize.x - 1) / blockSize.x, (col + blockSize.y - 1) / blockSize.y);
-    
-        ActivateInKernel<T, ActivateFunc><<<gridSize, blockSize>>>(d_A.getDevPointer(), C.getDevPointer(), row, col);
-        cudaDeviceSynchronize();
-    
+
+        if(str == 0){
+            ActivateInKernel<T, ActivateFunc><<<gridSize, blockSize>>>(d_A.getDevPointer(), C.getDevPointer(), row, col);
+            cudaDeviceSynchronize();
+        }else{
+            ActivateInKernel<T, ActivateFunc><<<gridSize, blockSize, 0, str>>>(d_A.getDevPointer(), C.getDevPointer(), row, col);
+            cudaStreamSynchronize(str);
+        }
         return C;
     }
     
@@ -792,45 +879,53 @@ namespace d_matrix_ver2{
     
     template<typename T>
     __global__ void softmaxKernel(T* in, T* out, int row, int col) {
-        int colIdx = blockIdx.x * blockDim.x + threadIdx.x;
-        if (colIdx >= col) return;
+        int rowIdx = blockIdx.x * blockDim.x + threadIdx.x;
+        if (rowIdx >= row) return;
     
         // 1. max
-        double max_val = in[colIdx];
-        for (int i = 1; i < row; ++i) {
-            double val = in[i * col + colIdx];
+        double max_val = in[rowIdx];
+        for (int i = 0; i < col; ++i) {
+            double val = in[rowIdx * col + i];
             if (val > max_val) max_val = val;
         }
     
         // 2. 분자와 분모
         double sum = 0.0;
-        for (int i = 0; i < row; ++i) {
-            sum += exp(in[i * col + colIdx] - max_val);
+        for (int i = 0; i < col; ++i) {
+            sum += exp(in[rowIdx * col + i] - max_val);
         }
     
         // 3. 결과 저장
-        for (int i = 0; i < row; ++i) {
-            out[i * col + colIdx] = exp(in[i * col + colIdx] - max_val) / sum;
+        for (int i = 0; i < col; ++i) {
+            out[rowIdx * col + i] = exp(in[rowIdx * col + i] - max_val) / sum;
         }
     }
     
     template<typename T>
-    d_matrix_2<T> softmax(const d_matrix_2<T>& input) {
+    d_matrix_2<T> softmax(const d_matrix_2<T>& input, cudaStream_t str = 0) {
         int row = input.getRow();
         int col = input.getCol();
     
         d_matrix_2<T> output(row, col);
     
         int threads = 32;
-        int blocks = (col + threads - 1) / threads;
+        int blocks = (row*col + threads - 1) / threads;
     
-        softmaxKernel<<<blocks, threads>>>(
-            input.getDevPointer(),
-            output.getDevPointer(),
-            row, col
-        );
-    
-        cudaDeviceSynchronize();
+        if(str == 0){
+            softmaxKernel<<<blocks, threads>>>(
+                input.getDevPointer(),
+                output.getDevPointer(),
+                row, col
+            );
+            cudaDeviceSynchronize();
+        }else {
+            softmaxKernel<<<blocks, threads, 0, str>>>(
+                input.getDevPointer(),
+                output.getDevPointer(),
+                row, col
+            );
+            cudaStreamSynchronize(str);
+        }
         return output;
     }
     
@@ -848,15 +943,20 @@ namespace d_matrix_ver2{
     }
     
     template<typename T>
-    d_matrix_2<T> convertZeroToEpsilon(d_matrix_2<T> x){
+    d_matrix_2<T> convertZeroToEpsilon(d_matrix_2<T> x, cudaStream_t str = 0){
         int row = x.getRow();
         int col = x.getCol();
     
         dim3 blockSize(32, 32);
         dim3 gridSize((col + blockSize.x - 1) / blockSize.x, (row + blockSize.y - 1) / blockSize.y);
     
-        convertInKernel<<<gridSize, blockSize>>>(x.getDevPointer(), row, col);
-        cudaDeviceSynchronize();
+        if(str == 0){
+            convertInKernel<<<gridSize, blockSize>>>(x.getDevPointer(), row, col);
+            cudaDeviceSynchronize();
+        }else {
+            convertInKernel<<<gridSize, blockSize, 0, str>>>(x.getDevPointer(), row, col);
+            cudaStreamSynchronize(str);
+        }
         return x;
     }
     
@@ -881,7 +981,7 @@ namespace d_matrix_ver2{
     }
     
     template<typename T>
-    d_matrix_2<T> convolute(const d_matrix_2<T>& d_A, const d_matrix_2<T>& d_B, int stride) {
+    d_matrix_2<T> convolute(const d_matrix_2<T>& d_A, const d_matrix_2<T>& d_B, int stride, cudaStream_t str = 0) {
         int inputRow = d_A.getRow();
         int inputCol = d_A.getCol();
         int filterRow = d_B.getRow();
@@ -899,9 +999,13 @@ namespace d_matrix_ver2{
         dim3 gridSize((outputRow + blockSize.x - 1) / blockSize.x, (outputCol + blockSize.y - 1) / blockSize.y);
     
         // Launch CUDA kernel
-        convoluteInKernel<<<gridSize, blockSize>>>(d_A.getDevPointer(), d_B.getDevPointer(), C.getDevPointer(), inputRow, inputCol, filterRow, filterCol, outputRow, outputCol, stride);
-        cudaDeviceSynchronize();
-    
+        if(str == 0){
+            convoluteInKernel<<<gridSize, blockSize>>>(d_A.getDevPointer(), d_B.getDevPointer(), C.getDevPointer(), inputRow, inputCol, filterRow, filterCol, outputRow, outputCol, stride);
+            cudaDeviceSynchronize();
+        }else {
+            convoluteInKernel<<<gridSize, blockSize, 0, str>>>(d_A.getDevPointer(), d_B.getDevPointer(), C.getDevPointer(), inputRow, inputCol, filterRow, filterCol, outputRow, outputCol, stride);
+            cudaStreamSynchronize(str);
+        }
         return C;
     }
     
@@ -949,7 +1053,7 @@ namespace d_matrix_ver2{
     
     // 3) Host function to allocate states, run kernels, and return initialized matrix
     template<typename T>
-    d_matrix_2<T> InitWeight(int row, int col, InitType type) {
+    d_matrix_2<T> InitWeight(int row, int col, InitType type, cudaStream_t str = 0) {
         d_matrix_2<T> weight(row, col);
     
         // Allocate and initialize cuRAND states
@@ -965,21 +1069,37 @@ namespace d_matrix_ver2{
     
         int threadsInit = 256;
         int blocksInit = (total + threadsInit - 1) / threadsInit;
-        initCurandStates<<<blocksInit, threadsInit>>>(d_states, seed, total);
-        cudaDeviceSynchronize();
+        if(str == 0){
+            initCurandStates<<<blocksInit, threadsInit>>>(d_states, seed, total);
+            cudaDeviceSynchronize();
+        }else {
+            initCurandStates<<<blocksInit, threadsInit, 0, str>>>(d_states, seed, total);
+            cudaStreamSynchronize(str);
+        }
     
         // Launch weight init kernel
         dim3 blockSize(16, 16);
         dim3 gridSize((row + blockSize.x - 1) / blockSize.x,
                       (col + blockSize.y - 1) / blockSize.y);
-        InitWeightInKernel<<<gridSize, blockSize>>>(
-            weight.getDevPointer(),
-            d_states,
-            row,
-            col,
-            type
-        );
-        cudaDeviceSynchronize();
+        if(str == 0){
+            InitWeightInKernel<<<gridSize, blockSize>>>(
+                weight.getDevPointer(),
+                d_states,
+                row,
+                col,
+                type
+            );
+            cudaDeviceSynchronize();
+        }else {
+            InitWeightInKernel<<<gridSize, blockSize, 0, str>>>(
+                weight.getDevPointer(),
+                d_states,
+                row,
+                col,
+                type
+            );
+            cudaStreamSynchronize(str);
+        }
     
         // Free states
         cudaFree(d_states);
