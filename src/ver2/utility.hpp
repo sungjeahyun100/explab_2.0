@@ -36,7 +36,7 @@ void printProgressBar(int current, int total, std::chrono::steady_clock::time_po
     }
     std::cout << "] " << int(progress * 100.0) << "% ";
     std::cout << '[' << processname << ']';
-    std::cout << "(경과 시간: " << elapsedSec << " ms)\r";
+    std::cout << "(경과 시간: " << elapsedSec << " ms)                      \r";
     std::cout.flush();
 }
 

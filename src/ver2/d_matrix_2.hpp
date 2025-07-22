@@ -647,8 +647,10 @@ namespace d_matrix_ver2{
         if(str == 0) {
             PlusinKernel<<<gridSize, blockSize>>>(d_A.getDevPointer(), d_B.getDevPointer(), C.getDevPointer(), row, col);
             cudaDeviceSynchronize();
+        }else{
+            PlusinKernel<<<gridSize, blockSize, 0, str>>>(d_A.getDevPointer(), d_B.getDevPointer(), C.getDevPointer(), row, col);
+            cudaStreamSynchronize(str);
         }
-        
     
         return C;
     }
@@ -900,7 +902,7 @@ namespace d_matrix_ver2{
             out[rowIdx * col + i] = exp(in[rowIdx * col + i] - max_val) / sum;
         }
     }
-    
+
     template<typename T>
     d_matrix_2<T> softmax(const d_matrix_2<T>& input, cudaStream_t str = 0) {
         int row = input.getRow();
@@ -924,6 +926,76 @@ namespace d_matrix_ver2{
                 output.getDevPointer(),
                 row, col
             );
+            cudaStreamSynchronize(str);
+        }
+        return output;
+    }
+
+    template<typename T>
+    __global__ void efficientSoftmaxKernel(const T* in, T* out, int rows, int cols) {
+        // 하나의 스레드 블록이 하나의 행을 처리
+        int row = blockIdx.x;
+        if (row >= rows) return;
+    
+        int tid = threadIdx.x;
+        const int block_size = blockDim.x;
+    
+        extern __shared__ T s_cache[];
+    
+        // --- 1. 행의 최댓값 찾기 ---
+        T thread_max = -1.0/0.0; // -INFINITY
+        for (int i = tid; i < cols; i += block_size) {
+            thread_max = max(thread_max, in[row * cols + i]);
+        }
+        s_cache[tid] = thread_max;
+        __syncthreads();
+    
+        // block_size가 2의 거듭제곱이라고 가정 (e.g., 256)
+        for (int s = block_size / 2; s > 0; s >>= 1) {
+            if (tid < s) {
+                s_cache[tid] = max(s_cache[tid], s_cache[tid + s]);
+            }
+            __syncthreads();
+        }
+        const T max_val = s_cache[0];
+    
+        // --- 2. exp(x - max)의 합계 구하기 ---
+        T thread_sum = 0.0;
+        for (int i = tid; i < cols; i += block_size) {
+            thread_sum += exp(in[row * cols + i] - max_val);
+        }
+        s_cache[tid] = thread_sum;
+        __syncthreads();
+    
+        for (int s = block_size / 2; s > 0; s >>= 1) {
+            if (tid < s) {
+                s_cache[tid] += s_cache[tid + s];
+            }
+            __syncthreads();
+        }
+        const T sum_val = s_cache[0];
+    
+        // --- 3. 최종 결과 계산 ---
+        for (int i = tid; i < cols; i += block_size) {
+            out[row * cols + i] = exp(in[row * cols + i] - max_val) / (sum_val + 1e-9); // 분모 0 방지
+        }
+    }
+    
+    template<typename T>
+    d_matrix_2<T> softmax_efficient(const d_matrix_2<T>& input, cudaStream_t str = 0) {
+        int row = input.getRow();
+        int col = input.getCol();
+    
+        d_matrix_2<T> output(row, col);
+
+        int threads = 512;
+        int blocks = row;
+    
+        if(str == 0){
+            efficientSoftmaxKernel<double><<<blocks, threads, threads*sizeof(T)>>>(input.getDevPointer(), output.getDevPointer(), row, col);
+            cudaDeviceSynchronize();
+        }else {
+            efficientSoftmaxKernel<double><<<blocks, threads, threads*sizeof(T), str>>>(input.getDevPointer(), output.getDevPointer(), row, col);
             cudaStreamSynchronize(str);
         }
         return output;

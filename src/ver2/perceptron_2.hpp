@@ -182,151 +182,150 @@ namespace perceptron_2 {
     constexpr int TILE = 32;
 
     class PerceptronLayer {
-    protected:
-        int inputSize;
-        int outputSize;
-        d2::d_matrix_2<double> input;
-        d2::d_matrix_2<double> weight;
-        d2::d_matrix_2<double> bias;
-        d2::d_matrix_2<double> output;
-        d2::d_matrix_2<double> delta;
-        d2::d_matrix_2<double> gradW;
-        d2::d_matrix_2<double> gradB;
-        optimizer* opt;
-        int deviceId;
-        cudaDeviceProp props;
-        size_t threadsPerBlock;
-        size_t numberOfBlocks;
-        d2::d_matrix_2<double> w_t;
-        d2::d_matrix_2<double> i_t;
-        d2::d_matrix_2<double> dX;
-        int sample_num;
-    public:
-        inline dim3 grid2d(int rows, int cols) {
-          return dim3(
-            (cols + TILE-1)/TILE,   // x-direction = #tiles across columns
-            (rows + TILE-1)/TILE    // y-direction = #tiles across rows
-          );
-        }
-
-        inline dim3 block2d() { return dim3(TILE, TILE); }
-
-        PerceptronLayer(int n, int i, int o, optimizer* optimizer, d2::InitType init)
-            : inputSize(i), outputSize(o), sample_num(n),
-              input(n, i), weight(i, o), bias(1, o), dX(n, i),
-              output(n, o), delta(n, o), gradW(i, o), gradB(1, o), opt(optimizer){
-            cudaGetDevice(&deviceId);
-            cudaGetDeviceProperties(&props, deviceId);
-            threadsPerBlock = props.maxThreadsPerBlock;
-            numberOfBlocks = props.multiProcessorCount;
-            weight = d2::InitWeight<double>(i, o, init);
-            bias.fill(0.01);
-            i_t.resize(inputSize, n);
-        }
-
-        const d2::d_matrix_2<double>& getWeight() const { return weight; }
-        const d2::d_matrix_2<double>& getDelta()  const { return delta; }
-    
-        void feedforward(const d2::d_matrix_2<double>& in, cudaStream_t str) {
-            input = in;
-            d2::MPinKernel<double><<<grid2d(outputSize, sample_num), block2d(), 0, str>>>(input.getDevPointer(), weight.getDevPointer(), output.getDevPointer(), sample_num, outputSize, inputSize);//2^5, 2^5, 2개
-            err = cudaGetLastError();  
-            if (err != cudaSuccess) {  
-              std::cerr << "[CUDA ERR] " << cudaGetErrorString(err)  
-                        << " at " << __FILE__ << ":" << __LINE__ << "\n";  
-              std::terminate();  
+        protected:
+            int inputSize;
+            int outputSize;
+            d2::d_matrix_2<double> input;
+            d2::d_matrix_2<double> weight;
+            d2::d_matrix_2<double> bias;
+            d2::d_matrix_2<double> output;
+            d2::d_matrix_2<double> delta;
+            d2::d_matrix_2<double> gradW;
+            d2::d_matrix_2<double> gradB;
+            optimizer* opt;
+            int deviceId;
+            cudaDeviceProp props;
+            size_t threadsPerBlock;
+            size_t numberOfBlocks;
+            d2::d_matrix_2<double> w_t;
+            d2::d_matrix_2<double> i_t;
+            d2::d_matrix_2<double> dX;
+            int sample_num;
+        public:
+            inline dim3 grid2d(int rows, int cols) {
+              return dim3(
+                (cols + TILE-1)/TILE,   // x-direction = #tiles across columns
+                (rows + TILE-1)/TILE    // y-direction = #tiles across rows
+              );
             }
-            addBias<<<numberOfBlocks, threadsPerBlock, 0, str>>>(output.getDevPointer(), bias.getDevPointer(), output.getDevPointer(), sample_num, outputSize); 
-            err = cudaGetLastError();  
-            if (err != cudaSuccess) {  
-              std::cerr << "[CUDA ERR] " << cudaGetErrorString(err)  
-                        << " at " << __FILE__ << ":" << __LINE__ << "\n";  
-              std::terminate();  
-            }
-            cudaStreamSynchronize(str);
-            
-        }
     
-        const d2::d_matrix_2<double> backprop(const d2::d_matrix_2<double>& ext_delta, const d2::d_matrix_2<double>& act_deriv, cudaStream_t str) {
-            d2::d_matrix_2<double> grad_input = ext_delta;
-
-            {
-                //delta
-                d2::HPinKernel_1dx<double><<<numberOfBlocks, threadsPerBlock, 0, str>>>(grad_input.getDevPointer(), act_deriv.getDevPointer(), delta.getDevPointer(), sample_num, outputSize);
-                err = cudaGetLastError();  
-                if (err != cudaSuccess) {  
-                    std::cerr << "[CUDA ERR] " << cudaGetErrorString(err)  
-                              << " at " << __FILE__ << ":" << __LINE__ << "\n";  
-                    std::terminate();  
-                }
-
-                //dW
-                d2::TransInKernel<double><<<grid2d(sample_num, inputSize), block2d(), 0, str>>>(input.getDevPointer(), i_t.getDevPointer(), sample_num, inputSize);
-                err = cudaGetLastError();  
-                if (err != cudaSuccess) {  
-                    std::cerr << "[CUDA ERR] " << cudaGetErrorString(err)  
-                              << " at " << __FILE__ << ":" << __LINE__ << "\n";  
-                    std::terminate();  
-                }
-                d2::MPinKernel<double><<<grid2d(outputSize, inputSize), block2d(), 0, str>>>(i_t.getDevPointer(), delta.getDevPointer(), gradW.getDevPointer(), inputSize, outputSize, sample_num);
-                err = cudaGetLastError();  
-                if (err != cudaSuccess) {
-                    std::cerr << "[CUDA ERR] " << cudaGetErrorString(err)  
-                              << " at " << __FILE__ << ":" << __LINE__ << "\n";  
-                    std::terminate();  
-                }
-                d2::ScalainKernel<double><<<grid2d(inputSize, outputSize), block2d(), 0, str>>>(gradW.getDevPointer(), 1/static_cast<double>(sample_num), gradW.getDevPointer(), inputSize, outputSize);
-                err = cudaGetLastError();  
-                if (err != cudaSuccess) {
-                    std::cerr << "[CUDA ERR] " << cudaGetErrorString(err)  
-                              << " at " << __FILE__ << ":" << __LINE__ << "\n";  
-                    std::terminate();  
-                }
-
-                //dB
-                d2::reduceRows<double><<<numberOfBlocks, threadsPerBlock, 0, str>>>(delta.getDevPointer(), gradB.getDevPointer(), sample_num, outputSize);
-                err = cudaGetLastError();  
-                if (err != cudaSuccess) {  
-                    std::cerr << "[CUDA ERR] " << cudaGetErrorString(err)  
-                              << " at " << __FILE__ << ":" << __LINE__ << "\n";  
-                    std::terminate();  
-                }
-                d2::ScalainKernel<double><<<grid2d(1, outputSize), block2d(), 0, str>>>(gradB.getDevPointer(), 1/static_cast<double>(sample_num), gradB.getDevPointer(), 1, outputSize);
-                err = cudaGetLastError();  
-                if (err != cudaSuccess) {
-                    std::cerr << "[CUDA ERR] " << cudaGetErrorString(err)  
-                              << " at " << __FILE__ << ":" << __LINE__ << "\n";  
-                    std::terminate();  
-                }
-
-                //dX
-                int tR = weight.getCol();
-                int tC = weight.getRow();
-                w_t.resize(tC, tR);
-                d2::TransInKernel<double><<<grid2d(tR, tC), block2d(), 0, str>>>(weight.getDevPointer(), w_t.getDevPointer(), tR, tC);
+            inline dim3 block2d() { return dim3(TILE, TILE); }
+    
+            PerceptronLayer(int n, int i, int o, optimizer* optimizer, d2::InitType init)
+                : inputSize(i), outputSize(o), sample_num(n),
+                  input(n, i), weight(i, o), bias(1, o), dX(n, i),
+                  output(n, o), delta(n, o), gradW(i, o), gradB(1, o), opt(optimizer){
+                cudaGetDevice(&deviceId);
+                cudaGetDeviceProperties(&props, deviceId);
+                threadsPerBlock = props.maxThreadsPerBlock;
+                numberOfBlocks = props.multiProcessorCount;
+                weight = d2::InitWeight<double>(i, o, init);
+                bias.fill(0.01);
+                i_t.resize(inputSize, n);
+            }
+    
+            const d2::d_matrix_2<double>& getWeight() const { return weight; }
+            const d2::d_matrix_2<double>& getDelta()  const { return delta; }
+        
+            void feedforward(const d2::d_matrix_2<double>& in, cudaStream_t str) {
+                input = in;
+                d2::MPinKernel<double><<<grid2d(outputSize, sample_num), block2d(), 0, str>>>(input.getDevPointer(), weight.getDevPointer(), output.getDevPointer(), sample_num, outputSize, inputSize);//2^5, 2^5, 2개
                 err = cudaGetLastError();  
                 if (err != cudaSuccess) {  
                   std::cerr << "[CUDA ERR] " << cudaGetErrorString(err)  
                             << " at " << __FILE__ << ":" << __LINE__ << "\n";  
                   std::terminate();  
                 }
-                grad_input.resize(sample_num, inputSize);
-                d2::MPinKernel<double><<<grid2d(inputSize, sample_num), block2d(), 0, str>>>(delta.getDevPointer(), w_t.getDevPointer(), dX.getDevPointer(), sample_num, inputSize, outputSize);
+                addBias<<<numberOfBlocks, threadsPerBlock, 0, str>>>(output.getDevPointer(), bias.getDevPointer(), output.getDevPointer(), sample_num, outputSize); 
                 err = cudaGetLastError();  
                 if (err != cudaSuccess) {  
                   std::cerr << "[CUDA ERR] " << cudaGetErrorString(err)  
                             << " at " << __FILE__ << ":" << __LINE__ << "\n";  
                   std::terminate();  
                 }
+                cudaStreamSynchronize(str);
+                
             }
-            opt->update(weight, bias, gradW, gradB, str);
-            cudaStreamSynchronize(str);
-            return dX;
-        }
+        
+            d2::d_matrix_2<double> backprop(const d2::d_matrix_2<double>& ext_delta, const d2::d_matrix_2<double>& act_deriv, cudaStream_t str) {
+                d2::d_matrix_2<double> grad_input = ext_delta;
     
-        d2::d_matrix_2<double>& getOutput(){ return output; }
-
-        ~PerceptronLayer(){}
+                {
+                    //delta
+                    d2::HPinKernel_1dx<double><<<numberOfBlocks, threadsPerBlock, 0, str>>>(grad_input.getDevPointer(), act_deriv.getDevPointer(), delta.getDevPointer(), sample_num, outputSize);
+                    err = cudaGetLastError();  
+                    if (err != cudaSuccess) {  
+                        std::cerr << "[CUDA ERR] " << cudaGetErrorString(err)  
+                                  << " at " << __FILE__ << ":" << __LINE__ << "\n";  
+                        std::terminate();  
+                    }
+    
+                    //dW
+                    d2::TransInKernel<double><<<grid2d(sample_num, inputSize), block2d(), 0, str>>>(input.getDevPointer(), i_t.getDevPointer(), sample_num, inputSize);
+                    err = cudaGetLastError();  
+                    if (err != cudaSuccess) {  
+                        std::cerr << "[CUDA ERR] " << cudaGetErrorString(err)  
+                                  << " at " << __FILE__ << ":" << __LINE__ << "\n";  
+                        std::terminate();  
+                    }
+                    d2::MPinKernel<double><<<grid2d(outputSize, inputSize), block2d(), 0, str>>>(i_t.getDevPointer(), delta.getDevPointer(), gradW.getDevPointer(), inputSize, outputSize, sample_num);
+                    err = cudaGetLastError();  
+                    if (err != cudaSuccess) {
+                        std::cerr << "[CUDA ERR] " << cudaGetErrorString(err)  
+                                  << " at " << __FILE__ << ":" << __LINE__ << "\n";  
+                        std::terminate();  
+                    }
+                    d2::ScalainKernel<double><<<grid2d(inputSize, outputSize), block2d(), 0, str>>>(gradW.getDevPointer(), 1/static_cast<double>(sample_num), gradW.getDevPointer(), inputSize, outputSize);
+                    err = cudaGetLastError();  
+                    if (err != cudaSuccess) {
+                        std::cerr << "[CUDA ERR] " << cudaGetErrorString(err)  
+                                  << " at " << __FILE__ << ":" << __LINE__ << "\n";  
+                        std::terminate();  
+                    }
+    
+                    //dB
+                    d2::reduceRows<double><<<numberOfBlocks, threadsPerBlock, 0, str>>>(delta.getDevPointer(), gradB.getDevPointer(), sample_num, outputSize);
+                    err = cudaGetLastError();  
+                    if (err != cudaSuccess) {  
+                        std::cerr << "[CUDA ERR] " << cudaGetErrorString(err)  
+                                  << " at " << __FILE__ << ":" << __LINE__ << "\n";  
+                        std::terminate();  
+                    }
+                    d2::ScalainKernel<double><<<grid2d(1, outputSize), block2d(), 0, str>>>(gradB.getDevPointer(), 1/static_cast<double>(sample_num), gradB.getDevPointer(), 1, outputSize);
+                    err = cudaGetLastError();  
+                    if (err != cudaSuccess) {
+                        std::cerr << "[CUDA ERR] " << cudaGetErrorString(err)  
+                                  << " at " << __FILE__ << ":" << __LINE__ << "\n";  
+                        std::terminate();  
+                    }
+    
+                    //dX
+                    int tR = weight.getCol();
+                    int tC = weight.getRow();
+                    w_t.resize(tC, tR);
+                    d2::TransInKernel<double><<<grid2d(tR, tC), block2d(), 0, str>>>(weight.getDevPointer(), w_t.getDevPointer(), tR, tC);
+                    err = cudaGetLastError();  
+                    if (err != cudaSuccess) {  
+                      std::cerr << "[CUDA ERR] " << cudaGetErrorString(err)  
+                                << " at " << __FILE__ << ":" << __LINE__ << "\n";  
+                      std::terminate();  
+                    }
+                    d2::MPinKernel<double><<<grid2d(inputSize, sample_num), block2d(), 0, str>>>(delta.getDevPointer(), w_t.getDevPointer(), dX.getDevPointer(), sample_num, inputSize, outputSize);
+                    err = cudaGetLastError();  
+                    if (err != cudaSuccess) {  
+                      std::cerr << "[CUDA ERR] " << cudaGetErrorString(err)  
+                                << " at " << __FILE__ << ":" << __LINE__ << "\n";  
+                      std::terminate();  
+                    }
+                }
+                opt->update(weight, bias, gradW, gradB, str);
+                cudaStreamSynchronize(str);
+                return dX;
+            }
+        
+            d2::d_matrix_2<double>& getOutput(){ return output; }
+    
+            ~PerceptronLayer(){}
     };
 
     // ActivateLayer----------------------------------------------------------------------------------------------------------------------------
@@ -338,15 +337,15 @@ namespace perceptron_2 {
     class ActivateLayer{
         private:
             ActType act;
-            d2::d_matrix_2<double> input;
             d2::d_matrix_2<double> output;
+            int row;
+            int col;
+            
         public:
             // 생성자: 행, 열, 활성화 종류 지정
-            ActivateLayer(int row, int col, ActType a) : input(row, col), output(row, col), act(a){}
-            // 입력 설정
-            void pushInput(const d2::d_matrix_2<double>& in);
+            ActivateLayer(int row, int col, ActType a) : output(row, col), act(a){}
             // 활성화 적용 (output = f(input))
-            void Active(cudaStream_t str);
+            void Active(const d2::d_matrix_2<double>& z, cudaStream_t str);
             // 활성화 미분값 반환 (f'(z))
             d2::d_matrix_2<double> d_Active(const d2::d_matrix_2<double>& z, cudaStream_t str);
             // 결과 반환
@@ -361,19 +360,14 @@ namespace perceptron_2 {
     // getLoss: loss 반환, getGrad: dL/dz 반환
     class LossLayer{
         private:
-            d2::d_matrix_2<double> target;
-            d2::d_matrix_2<double> output;
             LossType Loss;
         public:
             // 생성자: 행, 열, 손실 종류 지정
-            LossLayer(int row, int col, LossType L) : target(row, col), output(row, col), Loss(L){}
-            // 타겟/출력 입력
-            void pushTarget(const d2::d_matrix_2<double>& Target);
-            void pushOutput(const d2::d_matrix_2<double>& Output);
+            LossLayer(int row, int col, LossType L) : Loss(L){}
             // 손실값 반환
-            double getLoss();
+            double getLoss(d2::d_matrix_2<double> out, d2::d_matrix_2<double> target, cudaStream_t str);
             // 손실 미분 반환
-            d2::d_matrix_2<double> getGrad(cudaStream_t str);
+            d2::d_matrix_2<double> getGrad(d2::d_matrix_2<double> out, d2::d_matrix_2<double> target, cudaStream_t str);
             inline dim3 grid2d(int rows, int cols) {
                 return dim3(
                   (cols + TILE-1)/TILE,   // x-direction = #tiles across columns
@@ -384,34 +378,31 @@ namespace perceptron_2 {
             inline dim3 block2d() { return dim3(TILE, TILE); }
     };
     
-    void ActivateLayer::pushInput(const d2::d_matrix_2<double>& in){
-        input = in;
-    }
-    
+
     // 활성화 적용 (output = f(input))
     // 지원: ReLU, LReLU, Identity, Sigmoid
-    void ActivateLayer::Active(cudaStream_t str){
+    void ActivateLayer::Active(const d2::d_matrix_2<double>& z, cudaStream_t str = 0){
         switch (act) {
             case ActType::ReLU:
-                output = d2::MatrixActivate<double, d2::relu>(input, str); break;
+                output = d2::MatrixActivate<double, d2::relu>(z, str); break;
             case ActType::LReLU:
-                output = d2::MatrixActivate<double, d2::lrelu>(input, str); break;
+                output = d2::MatrixActivate<double, d2::lrelu>(z, str); break;
             case ActType::Identity:
-                output = d2::MatrixActivate<double, d2::Identity>(input, str); break;
+                output = d2::MatrixActivate<double, d2::Identity>(z, str); break;
             case ActType::Sigmoid:
-                output = d2::MatrixActivate<double, d2::sigmoid>(input, str); break;
+                output = d2::MatrixActivate<double, d2::sigmoid>(z, str); break;
             case ActType::Tanh:
-                output = d2::MatrixActivate<double, d2::Tanh>(input, str); break;
+                output = d2::MatrixActivate<double, d2::Tanh>(z, str); break;
             case ActType::ELU:
-                output = d2::MatrixActivate<double, d2::ELU>(input, str); break;
+                output = d2::MatrixActivate<double, d2::ELU>(z, str); break;
             case ActType::SELU:
-                output = d2::MatrixActivate<double, d2::SELU>(input, str); break;
+                output = d2::MatrixActivate<double, d2::SELU>(z, str); break;
             case ActType::Softplus:
-                output = d2::MatrixActivate<double, d2::Softplus>(input, str); break;
+                output = d2::MatrixActivate<double, d2::Softplus>(z, str); break;
             case ActType::Softsign:
-                output = d2::MatrixActivate<double, d2::Softsign>(input, str); break;
+                output = d2::MatrixActivate<double, d2::Softsign>(z, str); break;
             case ActType::Swish:
-                output = d2::MatrixActivate<double, d2::Swish>(input, str); break;
+                output = d2::MatrixActivate<double, d2::Swish>(z, str); break;
             default:
                 throw std::runtime_error("Unsupported ActivationType in perceptronLayer");
         }
@@ -453,36 +444,41 @@ namespace perceptron_2 {
     const d2::d_matrix_2<double>& ActivateLayer::getOutput() const {
         return output; 
     }
-    
-    // 타겟 입력
-    void LossLayer::pushTarget(const d2::d_matrix_2<double>& Target){
-        target = Target;
-    }
-    
-    // 출력 입력
-    void LossLayer::pushOutput(const d2::d_matrix_2<double>& Output){
-        output = Output;
+
+    //d_p: (N, C)
+    //d_t: (N, C)
+    //이 커널은 d_t가 원-핫 인코딩임을 가정하고 만들어짐.
+    __global__ void getCrossEntropyLossInKernel(double* d_p, double* d_t, int N, int C, double* out){
+        int rowIdx = blockIdx.x;
+        int tid = threadIdx.x;
+        if(tid >= C) return;
+
+        if(d_t[rowIdx*C + tid] == 1.0){
+            out[rowIdx] = ::log(d_p[rowIdx*C+tid] + 1e-9) * (-1);
+        }else{
+            return;
+        }
     }
     
     // 손실값 반환
     // MSE: L = 1/n Σ(y-p)^2
     // CrossEntropy: L = -Σ y log(softmax(p))
-    double LossLayer::getLoss() {
+    double LossLayer::getLoss(d2::d_matrix_2<double> out, d2::d_matrix_2<double> target, cudaStream_t str = 0) {
         switch (Loss) {
             case LossType::MSE: {
-                int N = output.getRow();
-                int C = output.getCol();
+                int N = out.getRow();
+                int C = out.getCol();
     
                 auto idx_begin = thrust::make_counting_iterator(0);
                 auto idx_end   = thrust::make_counting_iterator(N*C);
     
-                thrust::device_ptr<double> o_dev(output.getDevPointer());
+                thrust::device_ptr<double> o_dev(out.getDevPointer());
                 thrust::device_ptr<double> t_dev(target.getDevPointer());
                 double* o_ptr = thrust::raw_pointer_cast(o_dev);
                 double* t_ptr = thrust::raw_pointer_cast(t_dev);
     
                 double sum = thrust::transform_reduce(
-                    thrust::device,
+                    thrust::cuda_cub::par.on(str),
                     idx_begin, idx_end,
     
                     [o_ptr, t_ptr] __host__ __device__ (int i) -> double {
@@ -493,33 +489,39 @@ namespace perceptron_2 {
                     0.0,
                     thrust::plus<double>()
                 );
+                cudaStreamSynchronize(str);
                 return sum / (static_cast<double>(N*C));
             }
     
             case LossType::CrossEntropy: {
-                int N = output.getRow();    // 샘플 수
-                int C = output.getCol();    // 클래스 수
+                int N = out.getRow();    // 샘플 수
+                int C = out.getCol();    // 클래스 수
             
                 // (1) softmax
-                auto p = d2::softmax(output);
-            
+                auto p = d2::softmax_efficient(out, str);
+                d2::d_matrix_2<double> out_result(N, 1);
+
                 // (2) 디바이스 포인터 확보
+                double* out_ptr = out_result.getDevPointer();
                 double* p_ptr = p.getDevPointer();
                 double* t_ptr = target.getDevPointer();
-            
-                thrust::device_ptr<double> p_dev(p_ptr), t_dev(t_ptr);
+
+                thrust::device_ptr<double> out_dev(out_ptr);
             
                 auto idx_begin = thrust::make_counting_iterator(0);
-                auto idx_end   = thrust::make_counting_iterator(N*C);
+                auto idx_end   = thrust::make_counting_iterator(N);
+
+                getCrossEntropyLossInKernel<<<N, 512, 0, str>>>(p_ptr, t_ptr, N, C, out_ptr);
+
                 double sum = thrust::transform_reduce(
-                    thrust::device,
+                    thrust::cuda_cub::par.on(str),
                     idx_begin, idx_end,
-                    [p_ptr,t_ptr] __host__ __device__ (int idx) -> double {
-                        return -t_ptr[idx] * log(p_ptr[idx] + 1e-9);
+                    [out_ptr] __host__ __device__ (int idx) -> double {
+                        return out_ptr[idx];
                     },
                     0.0, thrust::plus<double>()
                 );
-            
+                cudaStreamSynchronize(str);
                 // (3) 배치 평균
                 return sum / static_cast<double>(N);
             }
@@ -531,27 +533,26 @@ namespace perceptron_2 {
     // 손실 미분 반환
     // MSE: dL/dz = 2(y-p)
     // CrossEntropy: dL/dz = softmax(p) - y
-    d2::d_matrix_2<double> LossLayer::getGrad(cudaStream_t str) {
+    d2::d_matrix_2<double> LossLayer::getGrad(d2::d_matrix_2<double> out, d2::d_matrix_2<double> target, cudaStream_t str = 0) {
     
         switch (Loss) {
             case LossType::MSE: {
                 // L = (1/N) Σ (o - t)^2  이므로  dL/dz = 2*(o - t)/N
-                int N = output.getRow();
+                int N = out.getRow();
                 // diff = output - target
-                d2::d_matrix_2<double> diff = matrixPlus(output, ScalaProduct(target, -1.0, str), str);
+                d2::d_matrix_2<double> diff = matrixPlus(out, ScalaProduct(target, -1.0, str), str);
                 auto result = ScalaProduct(diff, 2.0 / static_cast<double>(N), str);
                 cudaStreamSynchronize(str);
                 return result;
             }
     
             case LossType::CrossEntropy: {
-                int N = output.getRow();
+                int N = out.getRow();
                 // 2) 소프트맥스 확률 계산
-                d2::d_matrix_2<double> p = softmax(output, str);
+                d2::d_matrix_2<double> p = softmax_efficient(out, str);
     
                 // 3) gradient = (p - y) / N
                 d2::d_matrix_2<double> grad = matrixPlus(p, ScalaProduct(target, -1.0, str), str);
-                //auto result = ScalaProduct(grad, 1.0 / static_cast<double>(N), str);
                 cudaStreamSynchronize(str);
                 return grad;
             }
@@ -633,7 +634,7 @@ namespace perceptron_2 {
             CHK_CUDNN(cudnnSetTensor4dDescriptor(_yDesc,
                 CUDNN_TENSOR_NCHW, CUDNN_DATA_DOUBLE, outN,outC,outH,outW));
             CHK_CUDNN(cudnnSetTensor4dDescriptor(_biasDesc,
-                CUDNN_TENSOR_NCHW, CUDNN_DATA_DOUBLE, 1,K,1,1));
+                CUDNN_TENSOR_NCHW, CUDNN_DATA_DOUBLE, 1,outC,1,1));
       
             // fastest algo 한 개만 뽑기 (수정:알고리즘 여려개 뽐기로 수정함)
             int algoCount = 0;
@@ -718,6 +719,8 @@ namespace perceptron_2 {
                 _biasDesc, bias.getDevPointer(),
                 &alpha,
                 _yDesc, output.getDevPointer()));
+
+            cudaStreamSynchronize(str);
             return output;  // (N × K×Ho×Wo)
         }
     
@@ -726,11 +729,10 @@ namespace perceptron_2 {
         // dY: Loss 에서 넘어온 dL/dZ  act_deriv: 활성화 함수 도함수(z)
         d2::d_matrix_2<double> backward(const d2::d_matrix_2<double>& dY_dev, const d2::d_matrix_2<double>& act_deriv_dev, cudaStream_t str)
         {
-            delta = dY_dev;
+            d2::d_matrix_2<double> grad_input = dY_dev;
             // 2) 활성화 미분 곱하기
             int Rr=delta.getRow(), Cc=delta.getCol();
-            d2::HPinKernel_1dx<double><<<numberOfBlocks, threadsPerBlock, 0, str>>>(delta.getDevPointer(), act_deriv_dev.getDevPointer(), delta.getDevPointer(), Rr, Cc);
-            cudaStreamSynchronize(str);
+            d2::HPinKernel_1dx<double><<<numberOfBlocks, threadsPerBlock, 0, str>>>(grad_input.getDevPointer(), act_deriv_dev.getDevPointer(), delta.getDevPointer(), Rr, Cc);
             err = cudaGetLastError();
             if (err != cudaSuccess) {
                 std::cerr << "[ERROR] HPinKernel failed at convLayer::backward(): "
@@ -771,6 +773,7 @@ namespace perceptron_2 {
       
             // 6) 파라미터 업데이트
             opt->update(kernel, bias, gradW, gradB, str);
+            cudaStreamSynchronize(str);
       
             // 최종적으로 이전 레이어로 보낼 델타 반환
             // (already device 에 있으므로 Host 로 안 옮겨도 됩니다)

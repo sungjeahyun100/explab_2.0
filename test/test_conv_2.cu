@@ -100,19 +100,19 @@ public:
     d2::d_matrix_2<double> forward(const d2::d_matrix_2<double>& X, cudaStream_t str) {
 
         conv1.forward(X, str);
-        conv1Act.pushInput(conv1.getOutput()); conv1Act.Active(str);
+        conv1Act.Active(conv1.getOutput(), str);
 
         // conv2
         conv2.forward(conv1Act.getOutput(), str);
-        conv2Act.pushInput(conv2.getOutput()); conv2Act.Active(str);
+        conv2Act.Active(conv2.getOutput(), str);
 
         // fc1
         fc1.feedforward(conv2Act.getOutput(), str);
-        fc1Act.pushInput(fc1.getOutput()); fc1Act.Active(str);
+        fc1Act.Active(fc1.getOutput(), str);
 
         // fc2
         fc2.feedforward(fc1Act.getOutput(), str);
-        fc2Act.pushInput(fc2.getOutput()); fc2Act.Active(str);
+        fc2Act.Active(fc2.getOutput(), str);
 
         //auto forDebugfc2Act = fc2Act.getOutput();
         //forDebugfc2Act.cpyToHost();
@@ -154,9 +154,7 @@ public:
                 //labels[j].cpyToHost();
     
                 // 손실 계산
-                loss.pushOutput(Ypred);
-                loss.pushTarget(labels[j]);
-                double L = loss.getLoss();
+                double L = loss.getLoss(Ypred, labels[j], hs.model_str);
 
                 avgloss += L;
                 if(std::isnan(L)){
@@ -173,7 +171,7 @@ public:
                 }
 
                 // 역전파: FC 층들
-                auto grad2 = loss.getGrad(hs.model_str);  // dL/dz_fc2
+                auto grad2 = loss.getGrad(Ypred, labels[j], hs.model_str);  // dL/dz_fc2
                 //grad2.cpyToHost();
                 auto fc_dy2 = fc2.backprop(grad2, fc2Act.d_Active(fc2.getOutput(), hs.model_str), hs.model_str);
                 auto fc_dy1 = fc1.backprop(fc_dy2, fc1Act.d_Active(fc1.getOutput(), hs.model_str), hs.model_str);
