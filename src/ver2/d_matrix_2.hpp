@@ -883,7 +883,7 @@ namespace d_matrix_ver2{
         if (rowIdx >= row) return;
     
         // 1. max
-        double max_val = in[rowIdx];
+        double max_val = in[rowIdx * col + 0];
         for (int i = 0; i < col; ++i) {
             double val = in[rowIdx * col + i];
             if (val > max_val) max_val = val;

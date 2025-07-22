@@ -73,24 +73,24 @@ public:
     : batch_size(bs),
 
       // conv1: N=bs, C=1, H=W=28, K=8, R=S=3, pad=1, stride=1
-      conv1_opt(8, 1*3*3, 0.001, p2::layerType::conv),
-      conv1Act(bs, 8*28*28, p2::ActType::LReLU),
-      conv1(bs,1,28,28,  8,3,3, 1,1, 1,1, &conv1_opt, d2::InitType::He),
+      conv1_opt(8, 1*3*3, 0.0001, p2::layerType::conv),
+      conv1Act(bs, 8*28*28, p2::ActType::Tanh),
+      conv1(bs,1,28,28,  8,3,3, 1,1, 1,1, &conv1_opt, d2::InitType::Xavier),
 
       // conv2: N=bs, C=8, H=W=28, K=16, R=S=3, pad=1, stride=2 → out:16×14×14
-      conv2_opt(16, 8*3*3, 0.001, p2::layerType::conv),
-      conv2Act(bs, 16*14*14, p2::ActType::LReLU),
-      conv2(bs,8,28,28, 16,3,3, 1,1, 2,2, &conv2_opt, d2::InitType::He),
+      conv2_opt(16, 8*3*3, 0.0001, p2::layerType::conv),
+      conv2Act(bs, 16*14*14, p2::ActType::Tanh),
+      conv2(bs,8,28,28, 16,3,3, 1,1, 2,2, &conv2_opt, d2::InitType::Xavier),
 
       // fc1: 16*14*14 → 128
-      fc1_opt(16*14*14, 128, 0.001),
-      fc1Act(bs, 128, p2::ActType::LReLU),
-      fc1(bs, 16*14*14, 128, &fc1_opt, d2::InitType::He),
+      fc1_opt(16*14*14, 128, 0.0001),
+      fc1Act(bs, 128, p2::ActType::Tanh),
+      fc1(bs, 16*14*14, 128, &fc1_opt, d2::InitType::Xavier),
 
       // fc2: 128 → 10 (클래스 개수)
-      fc2_opt(128, 10, 0.001),
+      fc2_opt(128, 10, 0.0001),
       fc2Act(bs, 10, p2::ActType::Identity),
-      fc2(bs, 128, 10, &fc2_opt, d2::InitType::He),
+      fc2(bs, 128, 10, &fc2_opt, d2::InitType::Xavier),
 
       // 크로스엔트로피 손실
       loss(bs, 10, p2::LossType::CrossEntropy)
@@ -106,9 +106,8 @@ public:
         conv2.forward(conv1Act.getOutput(), str);
         conv2Act.pushInput(conv2.getOutput()); conv2Act.Active(str);
 
-        // 평탄화 → fc1
-        auto flat = conv2Act.getOutput().reshape(batch_size, 16*14*14);
-        fc1.feedforward(flat, str);
+        // fc1
+        fc1.feedforward(conv2Act.getOutput(), str);
         fc1Act.pushInput(fc1.getOutput()); fc1Act.Active(str);
 
         // fc2
@@ -161,7 +160,7 @@ public:
 
                 avgloss += L;
                 if(std::isnan(L)){
-                    std::cerr << "Loss is NaN at batch " << j << ", epoch " << e << std::endl;
+                    std::cerr << "Loss is NaN at batch " << j+1 << ", epoch " << e << std::endl;
                     std::cerr << "Ypred (first 10 elements): ";
                     Ypred.cpyToHost(); // Ensure host data is valid
                     for(int k=0; k<std::min(10, Ypred.size()); ++k) std::cerr << Ypred.getHostPointer()[k] << " ";
@@ -176,18 +175,18 @@ public:
                 // 역전파: FC 층들
                 auto grad2 = loss.getGrad(hs.model_str);  // dL/dz_fc2
                 //grad2.cpyToHost();
-                fc2.backprop(nullptr, grad2, fc2Act.d_Active(fc2.getOutput(), hs.model_str), hs.model_str);
-                fc1.backprop(&fc2, dummy, fc1Act.d_Active(fc1.getOutput(), hs.model_str), hs.model_str);
+                auto fc_dy2 = fc2.backprop(grad2, fc2Act.d_Active(fc2.getOutput(), hs.model_str), hs.model_str);
+                auto fc_dy1 = fc1.backprop(fc_dy2, fc1Act.d_Active(fc1.getOutput(), hs.model_str), hs.model_str);
     
-                auto dy2 = conv2.backward(&fc1, dummy, conv2Act.d_Active(conv2.getOutput(), hs.model_str), hs.model_str);
-                auto dy1 = conv1.backward(nullptr, dy2, conv1Act.d_Active(conv1.getOutput(), hs.model_str), hs.model_str);
+                auto dy2 = conv2.backward(fc_dy1, conv2Act.d_Active(conv2.getOutput(), hs.model_str), hs.model_str);
+                auto dy1 = conv1.backward(dy2, conv1Act.d_Active(conv1.getOutput(), hs.model_str), hs.model_str);
     
                 // 진행 상황 표시
                 std::string prograss_batch = "batch" + std::to_string(j+1);
                 std::string prograss_loss = "loss:" + std::to_string(L);
                 printProgressBar(e, epochs, start, prograss_avgloss + " | " + prograss_batch + " 의 " + prograss_loss);
             }
-            avgloss = avgloss/num_batches;
+            avgloss = avgloss/static_cast<double>(num_batches);
             prograss_avgloss = "[epoch" + std::to_string(e) + "/" + std::to_string(epochs) + "의 avgloss]:" + std::to_string(avgloss);
         }
         std::cout << std::endl;
@@ -199,7 +198,7 @@ public:
 };
 
 int main(){
-    constexpr int BATCH  = 1000;
+    constexpr int BATCH  = 500;
     constexpr int EPOCHS = 100;
 
     // MNIST 데이터 로드

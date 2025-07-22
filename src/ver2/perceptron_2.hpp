@@ -199,6 +199,7 @@ namespace perceptron_2 {
         size_t numberOfBlocks;
         d2::d_matrix_2<double> w_t;
         d2::d_matrix_2<double> i_t;
+        d2::d_matrix_2<double> dX;
         int sample_num;
     public:
         inline dim3 grid2d(int rows, int cols) {
@@ -212,7 +213,7 @@ namespace perceptron_2 {
 
         PerceptronLayer(int n, int i, int o, optimizer* optimizer, d2::InitType init)
             : inputSize(i), outputSize(o), sample_num(n),
-              input(n, i), weight(i, o), bias(1, o),
+              input(n, i), weight(i, o), bias(1, o), dX(n, i),
               output(n, o), delta(n, o), gradW(i, o), gradB(1, o), opt(optimizer){
             cudaGetDevice(&deviceId);
             cudaGetDeviceProperties(&props, deviceId);
@@ -246,38 +247,20 @@ namespace perceptron_2 {
             
         }
     
-        void backprop(PerceptronLayer* next, const d2::d_matrix_2<double>& ext_delta, const d2::d_matrix_2<double>& act_deriv, cudaStream_t str) {
+        const d2::d_matrix_2<double> backprop(const d2::d_matrix_2<double>& ext_delta, const d2::d_matrix_2<double>& act_deriv, cudaStream_t str) {
             d2::d_matrix_2<double> grad_input = ext_delta;
-            if(next != nullptr) {
-                int tR = next->weight.getCol();
-                int tC = next->weight.getRow();
-                w_t.resize(tC, tR);
-                d2::TransInKernel<double><<<grid2d(tC, tR), block2d(), 0, str>>>(next->weight.getDevPointer(), w_t.getDevPointer(), next->weight.getRow(), next->weight.getCol());
-                err = cudaGetLastError();  
-                if (err != cudaSuccess) {  
-                  std::cerr << "[CUDA ERR] " << cudaGetErrorString(err)  
-                            << " at " << __FILE__ << ":" << __LINE__ << "\n";  
-                  std::terminate();  
-                }
-                grad_input.resize(sample_num, inputSize);
-                d2::MPinKernel<double><<<grid2d(outputSize, sample_num), block2d(), 0, str>>>(next->delta.getDevPointer(), w_t.getDevPointer(), grad_input.getDevPointer(), sample_num, outputSize, next->outputSize);
-                err = cudaGetLastError();  
-                if (err != cudaSuccess) {  
-                  std::cerr << "[CUDA ERR] " << cudaGetErrorString(err)  
-                            << " at " << __FILE__ << ":" << __LINE__ << "\n";  
-                  std::terminate();  
-                }
-            }
 
             {
+                //delta
                 d2::HPinKernel_1dx<double><<<numberOfBlocks, threadsPerBlock, 0, str>>>(grad_input.getDevPointer(), act_deriv.getDevPointer(), delta.getDevPointer(), sample_num, outputSize);
-
                 err = cudaGetLastError();  
                 if (err != cudaSuccess) {  
                     std::cerr << "[CUDA ERR] " << cudaGetErrorString(err)  
                               << " at " << __FILE__ << ":" << __LINE__ << "\n";  
                     std::terminate();  
                 }
+
+                //dW
                 d2::TransInKernel<double><<<grid2d(sample_num, inputSize), block2d(), 0, str>>>(input.getDevPointer(), i_t.getDevPointer(), sample_num, inputSize);
                 err = cudaGetLastError();  
                 if (err != cudaSuccess) {  
@@ -292,6 +275,15 @@ namespace perceptron_2 {
                               << " at " << __FILE__ << ":" << __LINE__ << "\n";  
                     std::terminate();  
                 }
+                d2::ScalainKernel<double><<<grid2d(inputSize, outputSize), block2d(), 0, str>>>(gradW.getDevPointer(), 1/static_cast<double>(sample_num), gradW.getDevPointer(), inputSize, outputSize);
+                err = cudaGetLastError();  
+                if (err != cudaSuccess) {
+                    std::cerr << "[CUDA ERR] " << cudaGetErrorString(err)  
+                              << " at " << __FILE__ << ":" << __LINE__ << "\n";  
+                    std::terminate();  
+                }
+
+                //dB
                 d2::reduceRows<double><<<numberOfBlocks, threadsPerBlock, 0, str>>>(delta.getDevPointer(), gradB.getDevPointer(), sample_num, outputSize);
                 err = cudaGetLastError();  
                 if (err != cudaSuccess) {  
@@ -299,9 +291,37 @@ namespace perceptron_2 {
                               << " at " << __FILE__ << ":" << __LINE__ << "\n";  
                     std::terminate();  
                 }
+                d2::ScalainKernel<double><<<grid2d(1, outputSize), block2d(), 0, str>>>(gradB.getDevPointer(), 1/static_cast<double>(sample_num), gradB.getDevPointer(), 1, outputSize);
+                err = cudaGetLastError();  
+                if (err != cudaSuccess) {
+                    std::cerr << "[CUDA ERR] " << cudaGetErrorString(err)  
+                              << " at " << __FILE__ << ":" << __LINE__ << "\n";  
+                    std::terminate();  
+                }
+
+                //dX
+                int tR = weight.getCol();
+                int tC = weight.getRow();
+                w_t.resize(tC, tR);
+                d2::TransInKernel<double><<<grid2d(tR, tC), block2d(), 0, str>>>(weight.getDevPointer(), w_t.getDevPointer(), tR, tC);
+                err = cudaGetLastError();  
+                if (err != cudaSuccess) {  
+                  std::cerr << "[CUDA ERR] " << cudaGetErrorString(err)  
+                            << " at " << __FILE__ << ":" << __LINE__ << "\n";  
+                  std::terminate();  
+                }
+                grad_input.resize(sample_num, inputSize);
+                d2::MPinKernel<double><<<grid2d(inputSize, sample_num), block2d(), 0, str>>>(delta.getDevPointer(), w_t.getDevPointer(), dX.getDevPointer(), sample_num, inputSize, outputSize);
+                err = cudaGetLastError();  
+                if (err != cudaSuccess) {  
+                  std::cerr << "[CUDA ERR] " << cudaGetErrorString(err)  
+                            << " at " << __FILE__ << ":" << __LINE__ << "\n";  
+                  std::terminate();  
+                }
             }
             opt->update(weight, bias, gradW, gradB, str);
             cudaStreamSynchronize(str);
+            return dX;
         }
     
         d2::d_matrix_2<double>& getOutput(){ return output; }
@@ -473,7 +493,7 @@ namespace perceptron_2 {
                     0.0,
                     thrust::plus<double>()
                 );
-                return sum / (static_cast<double>(N)*output.getCol());
+                return sum / (static_cast<double>(N*C));
             }
     
             case LossType::CrossEntropy: {
@@ -704,15 +724,9 @@ namespace perceptron_2 {
         // 역전파 (호스트에서 호출)
         // next==nullptr 이면 맨 앞 레이어
         // dY: Loss 에서 넘어온 dL/dZ  act_deriv: 활성화 함수 도함수(z)
-        d2::d_matrix_2<double> backward(PerceptronLayer* next, const d2::d_matrix_2<double>& dY_dev, const d2::d_matrix_2<double>& act_deriv_dev, cudaStream_t str)
+        d2::d_matrix_2<double> backward(const d2::d_matrix_2<double>& dY_dev, const d2::d_matrix_2<double>& act_deriv_dev, cudaStream_t str)
         {
-            // 1) 외부 델타 or 다음 레이어 전파 델타 준비
-            if(next != nullptr){
-              // 다음 레이어의 convLayer::delta 를 가져와서
-              delta = d2::matrixMP(next->getDelta(), next->getWeight().transpose(str), str);  
-            } else {
-              delta = dY_dev;
-            }
+            delta = dY_dev;
             // 2) 활성화 미분 곱하기
             int Rr=delta.getRow(), Cc=delta.getCol();
             d2::HPinKernel_1dx<double><<<numberOfBlocks, threadsPerBlock, 0, str>>>(delta.getDevPointer(), act_deriv_dev.getDevPointer(), delta.getDevPointer(), Rr, Cc);
@@ -725,7 +739,7 @@ namespace perceptron_2 {
             }
       
             // 3) gradW 계산
-            const double alpha=1.0, beta=0.0;
+            const double alpha=1.0/static_cast<double>(N), beta=0.0;
             CHK_CUDNN(cudnnSetStream(_handle, str));
             CHK_CUDNN(cudnnConvolutionBackwardFilter(
                 _handle, &alpha,
