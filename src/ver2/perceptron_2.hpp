@@ -16,6 +16,15 @@ namespace perceptron_2 {
     
     cudaError_t err;
 
+    void getErr(){
+        err = cudaGetLastError();  
+        if (err != cudaSuccess) {  
+          std::cerr << "[CUDA ERR] " << cudaGetErrorString(err)  
+                    << " at " << __FILE__ << ":" << __LINE__ << "\n";  
+          std::terminate();  
+        }
+    }
+
     enum class ActType {
         ReLU,
         LReLU,
@@ -143,12 +152,7 @@ namespace perceptron_2 {
                 bc1, bc2,
                 Nw
             );
-            err = cudaGetLastError();  
-            if (err != cudaSuccess) {  
-              std::cerr << "[CUDA ERR] " << cudaGetErrorString(err)  
-                        << " at " << __FILE__ << ":" << __LINE__ << "\n";  
-              std::terminate();  
-            }
+            getErr();
             // 2) bias 업데이트 (이제 B는 1×col 이므로 N_B = cols)
             CalcAdam<<<gridB, blockSize, 0, str>>>(
                 gB.getDevPointer(),
@@ -159,12 +163,7 @@ namespace perceptron_2 {
                 bc1, bc2,
                 Nb
             );
-            err = cudaGetLastError();  
-            if (err != cudaSuccess) {  
-              std::cerr << "[CUDA ERR] " << cudaGetErrorString(err)  
-                        << " at " << __FILE__ << ":" << __LINE__ << "\n";  
-              std::terminate();  
-            }
+            getErr();
     
             cudaStreamSynchronize(str);
         }
@@ -211,7 +210,7 @@ namespace perceptron_2 {
     
             inline dim3 block2d() { return dim3(TILE, TILE); }
     
-            PerceptronLayer(int n, int i, int o, optimizer* optimizer, d2::InitType init)
+            PerceptronLayer(int n, int i, int o, optimizer* optimizer, d2::InitType init, cudaStream_t str)
                 : inputSize(i), outputSize(o), sample_num(n),
                   input(n, i), weight(i, o), bias(1, o), dX(n, i),
                   output(n, o), delta(n, o), gradW(i, o), gradB(1, o), opt(optimizer){
@@ -219,8 +218,8 @@ namespace perceptron_2 {
                 cudaGetDeviceProperties(&props, deviceId);
                 threadsPerBlock = props.maxThreadsPerBlock;
                 numberOfBlocks = props.multiProcessorCount;
-                weight = d2::InitWeight<double>(i, o, init);
-                bias.fill(0.01);
+                weight = d2::InitWeight<double>(i, o, init, str);
+                bias.fill(0.01, str);
                 i_t.resize(inputSize, n);
             }
     
@@ -230,19 +229,9 @@ namespace perceptron_2 {
             void feedforward(const d2::d_matrix_2<double>& in, cudaStream_t str) {
                 input = in;
                 d2::MPinKernel<double><<<grid2d(outputSize, sample_num), block2d(), 0, str>>>(input.getDevPointer(), weight.getDevPointer(), output.getDevPointer(), sample_num, outputSize, inputSize);//2^5, 2^5, 2개
-                err = cudaGetLastError();  
-                if (err != cudaSuccess) {  
-                  std::cerr << "[CUDA ERR] " << cudaGetErrorString(err)  
-                            << " at " << __FILE__ << ":" << __LINE__ << "\n";  
-                  std::terminate();  
-                }
+                getErr();
                 addBias<<<numberOfBlocks, threadsPerBlock, 0, str>>>(output.getDevPointer(), bias.getDevPointer(), output.getDevPointer(), sample_num, outputSize); 
-                err = cudaGetLastError();  
-                if (err != cudaSuccess) {  
-                  std::cerr << "[CUDA ERR] " << cudaGetErrorString(err)  
-                            << " at " << __FILE__ << ":" << __LINE__ << "\n";  
-                  std::terminate();  
-                }
+                getErr();
                 cudaStreamSynchronize(str);
                 
             }
@@ -253,70 +242,30 @@ namespace perceptron_2 {
                 {
                     //delta
                     d2::HPinKernel_1dx<double><<<numberOfBlocks, threadsPerBlock, 0, str>>>(grad_input.getDevPointer(), act_deriv.getDevPointer(), delta.getDevPointer(), sample_num, outputSize);
-                    err = cudaGetLastError();  
-                    if (err != cudaSuccess) {  
-                        std::cerr << "[CUDA ERR] " << cudaGetErrorString(err)  
-                                  << " at " << __FILE__ << ":" << __LINE__ << "\n";  
-                        std::terminate();  
-                    }
+                    getErr();
     
                     //dW
                     d2::TransInKernel<double><<<grid2d(sample_num, inputSize), block2d(), 0, str>>>(input.getDevPointer(), i_t.getDevPointer(), sample_num, inputSize);
-                    err = cudaGetLastError();  
-                    if (err != cudaSuccess) {  
-                        std::cerr << "[CUDA ERR] " << cudaGetErrorString(err)  
-                                  << " at " << __FILE__ << ":" << __LINE__ << "\n";  
-                        std::terminate();  
-                    }
+                    getErr();
                     d2::MPinKernel<double><<<grid2d(outputSize, inputSize), block2d(), 0, str>>>(i_t.getDevPointer(), delta.getDevPointer(), gradW.getDevPointer(), inputSize, outputSize, sample_num);
-                    err = cudaGetLastError();  
-                    if (err != cudaSuccess) {
-                        std::cerr << "[CUDA ERR] " << cudaGetErrorString(err)  
-                                  << " at " << __FILE__ << ":" << __LINE__ << "\n";  
-                        std::terminate();  
-                    }
+                    getErr();
                     d2::ScalainKernel<double><<<grid2d(inputSize, outputSize), block2d(), 0, str>>>(gradW.getDevPointer(), 1/static_cast<double>(sample_num), gradW.getDevPointer(), inputSize, outputSize);
-                    err = cudaGetLastError();  
-                    if (err != cudaSuccess) {
-                        std::cerr << "[CUDA ERR] " << cudaGetErrorString(err)  
-                                  << " at " << __FILE__ << ":" << __LINE__ << "\n";  
-                        std::terminate();  
-                    }
+                    getErr();
     
                     //dB
                     d2::reduceRows<double><<<numberOfBlocks, threadsPerBlock, 0, str>>>(delta.getDevPointer(), gradB.getDevPointer(), sample_num, outputSize);
-                    err = cudaGetLastError();  
-                    if (err != cudaSuccess) {  
-                        std::cerr << "[CUDA ERR] " << cudaGetErrorString(err)  
-                                  << " at " << __FILE__ << ":" << __LINE__ << "\n";  
-                        std::terminate();  
-                    }
+                    getErr();
                     d2::ScalainKernel<double><<<grid2d(1, outputSize), block2d(), 0, str>>>(gradB.getDevPointer(), 1/static_cast<double>(sample_num), gradB.getDevPointer(), 1, outputSize);
-                    err = cudaGetLastError();  
-                    if (err != cudaSuccess) {
-                        std::cerr << "[CUDA ERR] " << cudaGetErrorString(err)  
-                                  << " at " << __FILE__ << ":" << __LINE__ << "\n";  
-                        std::terminate();  
-                    }
+                    getErr();
     
                     //dX
                     int tR = weight.getCol();
                     int tC = weight.getRow();
                     w_t.resize(tC, tR);
                     d2::TransInKernel<double><<<grid2d(tR, tC), block2d(), 0, str>>>(weight.getDevPointer(), w_t.getDevPointer(), tR, tC);
-                    err = cudaGetLastError();  
-                    if (err != cudaSuccess) {  
-                      std::cerr << "[CUDA ERR] " << cudaGetErrorString(err)  
-                                << " at " << __FILE__ << ":" << __LINE__ << "\n";  
-                      std::terminate();  
-                    }
+                    getErr();
                     d2::MPinKernel<double><<<grid2d(inputSize, sample_num), block2d(), 0, str>>>(delta.getDevPointer(), w_t.getDevPointer(), dX.getDevPointer(), sample_num, inputSize, outputSize);
-                    err = cudaGetLastError();  
-                    if (err != cudaSuccess) {  
-                      std::cerr << "[CUDA ERR] " << cudaGetErrorString(err)  
-                                << " at " << __FILE__ << ":" << __LINE__ << "\n";  
-                      std::terminate();  
-                    }
+                    getErr();
                 }
                 opt->update(weight, bias, gradW, gradB, str);
                 cudaStreamSynchronize(str);
@@ -337,19 +286,13 @@ namespace perceptron_2 {
     class ActivateLayer{
         private:
             ActType act;
-            d2::d_matrix_2<double> output;
-            int row;
-            int col;
-            
         public:
             // 생성자: 행, 열, 활성화 종류 지정
-            ActivateLayer(int row, int col, ActType a) : output(row, col), act(a){}
+            ActivateLayer(ActType a) : act(a){}
             // 활성화 적용 (output = f(input))
-            void Active(const d2::d_matrix_2<double>& z, cudaStream_t str);
+            d2::d_matrix_2<double> Active(const d2::d_matrix_2<double>& z, cudaStream_t str);
             // 활성화 미분값 반환 (f'(z))
             d2::d_matrix_2<double> d_Active(const d2::d_matrix_2<double>& z, cudaStream_t str);
-            // 결과 반환
-            const d2::d_matrix_2<double>& getOutput() const ;
     };
     
     // LossLayer--------------------------------------------------------------------------------------------------------------------------------
@@ -363,7 +306,7 @@ namespace perceptron_2 {
             LossType Loss;
         public:
             // 생성자: 행, 열, 손실 종류 지정
-            LossLayer(int row, int col, LossType L) : Loss(L){}
+            LossLayer(LossType L) : Loss(L){}
             // 손실값 반환
             double getLoss(d2::d_matrix_2<double> out, d2::d_matrix_2<double> target, cudaStream_t str);
             // 손실 미분 반환
@@ -381,28 +324,28 @@ namespace perceptron_2 {
 
     // 활성화 적용 (output = f(input))
     // 지원: ReLU, LReLU, Identity, Sigmoid
-    void ActivateLayer::Active(const d2::d_matrix_2<double>& z, cudaStream_t str = 0){
+    d2::d_matrix_2<double> ActivateLayer::Active(const d2::d_matrix_2<double>& z, cudaStream_t str = 0){
         switch (act) {
             case ActType::ReLU:
-                output = d2::MatrixActivate<double, d2::relu>(z, str); break;
+                return d2::MatrixActivate<double, d2::relu>(z, str); break;
             case ActType::LReLU:
-                output = d2::MatrixActivate<double, d2::lrelu>(z, str); break;
+                return d2::MatrixActivate<double, d2::lrelu>(z, str); break;
             case ActType::Identity:
-                output = d2::MatrixActivate<double, d2::Identity>(z, str); break;
+                return d2::MatrixActivate<double, d2::Identity>(z, str); break;
             case ActType::Sigmoid:
-                output = d2::MatrixActivate<double, d2::sigmoid>(z, str); break;
+                return d2::MatrixActivate<double, d2::sigmoid>(z, str); break;
             case ActType::Tanh:
-                output = d2::MatrixActivate<double, d2::Tanh>(z, str); break;
+                return d2::MatrixActivate<double, d2::Tanh>(z, str); break;
             case ActType::ELU:
-                output = d2::MatrixActivate<double, d2::ELU>(z, str); break;
+                return d2::MatrixActivate<double, d2::ELU>(z, str); break;
             case ActType::SELU:
-                output = d2::MatrixActivate<double, d2::SELU>(z, str); break;
+                return d2::MatrixActivate<double, d2::SELU>(z, str); break;
             case ActType::Softplus:
-                output = d2::MatrixActivate<double, d2::Softplus>(z, str); break;
+                return d2::MatrixActivate<double, d2::Softplus>(z, str); break;
             case ActType::Softsign:
-                output = d2::MatrixActivate<double, d2::Softsign>(z, str); break;
+                return d2::MatrixActivate<double, d2::Softsign>(z, str); break;
             case ActType::Swish:
-                output = d2::MatrixActivate<double, d2::Swish>(z, str); break;
+                return d2::MatrixActivate<double, d2::Swish>(z, str); break;
             default:
                 throw std::runtime_error("Unsupported ActivationType in perceptronLayer");
         }
@@ -440,10 +383,6 @@ namespace perceptron_2 {
         }
     }
     
-    // 활성화 결과 반환
-    const d2::d_matrix_2<double>& ActivateLayer::getOutput() const {
-        return output; 
-    }
 
     //d_p: (N, C)
     //d_t: (N, C)
@@ -512,6 +451,7 @@ namespace perceptron_2 {
                 auto idx_end   = thrust::make_counting_iterator(N);
 
                 getCrossEntropyLossInKernel<<<N, 512, 0, str>>>(p_ptr, t_ptr, N, C, out_ptr);
+                getErr();
 
                 double sum = thrust::transform_reduce(
                     thrust::cuda_cub::par.on(str),
@@ -545,7 +485,6 @@ namespace perceptron_2 {
                 cudaStreamSynchronize(str);
                 return result;
             }
-    
             case LossType::CrossEntropy: {
                 int N = out.getRow();
                 // 2) 소프트맥스 확률 계산
@@ -573,6 +512,7 @@ namespace perceptron_2 {
         cudnnConvolutionBwdFilterAlgo_t _bestBwdFAlgo;
         size_t                       _workspaceBytes;
         void*                        _workspace = nullptr;
+        
         int deviceId;
         cudaDeviceProp props;
         size_t threadsPerBlock;
@@ -590,7 +530,7 @@ namespace perceptron_2 {
                   int K_, int R_, int S_,
                   int pad_h_, int pad_w_,
                   int stride_h_, int stride_w_,
-                  optimizer* o, d2::InitType init)
+                  optimizer* o, d2::InitType init, cudaStream_t str)
           : N(N_), C(C_), H(H_), W(W_)
           , K(K_), R(R_), S(S_)
           , pad_h(pad_h_), pad_w(pad_w_)
@@ -610,8 +550,8 @@ namespace perceptron_2 {
             threadsPerBlock = props.maxThreadsPerBlock;
             numberOfBlocks = props.multiProcessorCount;
 
-            kernel = d2::InitWeight<double>(K_, C_*R_*S_, init);
-            bias.fill(0.01l);
+            kernel = d2::InitWeight<double>(K_, C_*R_*S_, init, str);
+            bias.fill(0.0, str);  // bias를 0으로 초기화 (더 안정적)
             // — cuDNN 생략 없이 에러 체크까지 —
             CHK_CUDNN(cudnnCreate(&_handle));
             CHK_CUDNN(cudnnCreateTensorDescriptor(&_xDesc));
@@ -619,7 +559,8 @@ namespace perceptron_2 {
             CHK_CUDNN(cudnnCreateTensorDescriptor(&_biasDesc));
             CHK_CUDNN(cudnnCreateFilterDescriptor(&_wDesc));
             CHK_CUDNN(cudnnCreateConvolutionDescriptor(&_convDesc));
-      
+
+            CHK_CUDNN(cudnnSetStream(_handle, str));
             CHK_CUDNN(cudnnSetTensor4dDescriptor(_xDesc,
                 CUDNN_TENSOR_NCHW, CUDNN_DATA_DOUBLE, N,C,H,W));
             CHK_CUDNN(cudnnSetFilter4dDescriptor(_wDesc,
@@ -671,10 +612,12 @@ namespace perceptron_2 {
             }
   
             if (_workspaceBytes > 0) {
-            err = cudaMalloc(&_workspace, _workspaceBytes);
+            err = cudaMallocAsync(&_workspace, _workspaceBytes, str);
               if (err != cudaSuccess) {
                 throw std::runtime_error(std::string("cudaMalloc failed for workspace: ") + cudaGetErrorString(err));
               }
+              // workspace 메모리 초기화 (NaN 방지)
+              cudaMemsetAsync(_workspace, 0, _workspaceBytes, str);
             }
   
             std::cout << "[conv] fwdAlgo=" << _bestAlgo
@@ -707,20 +650,15 @@ namespace perceptron_2 {
                 _convDesc, _bestAlgo,
                 _workspace, _workspaceBytes,
                 &beta,    _yDesc, output.getDevPointer()));
-                err = cudaGetLastError();  
-                if (err != cudaSuccess) {  
-                  std::cerr << "[CUDA ERR] " << cudaGetErrorString(err)  
-                            << " at " << __FILE__ << ":" << __LINE__ << "\n";  
-                  std::terminate();  
-                }
+            getErr();
             // 3) bias 추가
             CHK_CUDNN(cudnnAddTensor(
                 _handle, &alpha,
                 _biasDesc, bias.getDevPointer(),
                 &alpha,
                 _yDesc, output.getDevPointer()));
-
-            cudaStreamSynchronize(str);
+            getErr();
+            // 동기화 제거 - 스트림을 사용하므로 불필요
             return output;  // (N × K×Ho×Wo)
         }
     
@@ -733,12 +671,7 @@ namespace perceptron_2 {
             // 2) 활성화 미분 곱하기
             int Rr=delta.getRow(), Cc=delta.getCol();
             d2::HPinKernel_1dx<double><<<numberOfBlocks, threadsPerBlock, 0, str>>>(grad_input.getDevPointer(), act_deriv_dev.getDevPointer(), delta.getDevPointer(), Rr, Cc);
-            err = cudaGetLastError();
-            if (err != cudaSuccess) {
-                std::cerr << "[ERROR] HPinKernel failed at convLayer::backward(): "
-                          << cudaGetErrorString(err) << std::endl;
-                std::abort();
-            }
+            getErr();
       
             // 3) gradW 계산
             const double alpha=1.0/static_cast<double>(N), beta=0.0;
@@ -751,7 +684,7 @@ namespace perceptron_2 {
                 _workspace, _workspaceBytes,
                 &beta,
                 _wDesc, gradW.getDevPointer()));
-      
+            getErr();
             // 4) gradB 계산
             CHK_CUDNN(cudnnSetStream(_handle, str));
             CHK_CUDNN(cudnnConvolutionBackwardBias(
@@ -759,7 +692,7 @@ namespace perceptron_2 {
                 _yDesc, delta.getDevPointer(),
                 &beta,
                 _biasDesc, gradB.getDevPointer()));
-      
+            getErr();
             // 5) dX 계산 (이전 레이어로 전파할 델타)
             CHK_CUDNN(cudnnSetStream(_handle, str));
             CHK_CUDNN(cudnnConvolutionBackwardData(
@@ -770,10 +703,10 @@ namespace perceptron_2 {
                 _workspace, _workspaceBytes,
                 &beta,
                 _xDesc, dX.getDevPointer()));
-      
+            getErr();
             // 6) 파라미터 업데이트
             opt->update(kernel, bias, gradW, gradB, str);
-            cudaStreamSynchronize(str);
+            // 동기화 제거 - 스트림을 사용하므로 불필요
       
             // 최종적으로 이전 레이어로 보낼 델타 반환
             // (already device 에 있으므로 Host 로 안 옮겨도 됩니다)

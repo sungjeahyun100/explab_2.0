@@ -286,21 +286,23 @@ namespace d_matrix_ver2{
             host_valid = false;
             dev_valid  = true;
         }
-        void fill(T value) {
+        void fill(T value, cudaStream_t str = 0) {
             for (int i = 0; i < row * col; ++i) {
                 h_data[i] = value;
             }
-            cpyToDev();
+            cpyToDev(str);
             host_valid = true;
         }
     
-        void cpyToDev(){
-            CHECK_CUDA(cudaMemcpy(d_data, h_data.data(), row*col*sizeof(T), cudaMemcpyHostToDevice));
+        void cpyToDev(cudaStream_t str = 0){
+            if(str == 0) CHECK_CUDA(cudaMemcpy(d_data, h_data.data(), row*col*sizeof(T), cudaMemcpyHostToDevice));
+            else CHECK_CUDA(cudaMemcpyAsync(d_data, h_data.data(), row*col*sizeof(T), cudaMemcpyHostToDevice, str));
             dev_valid = true;
         }
         
-        void cpyToHost(){
-            CHECK_CUDA(cudaMemcpy(h_data.data(), d_data, row*col*sizeof(T), cudaMemcpyDeviceToHost));
+        void cpyToHost(cudaStream_t str = 0){
+            if(str == 0) CHECK_CUDA(cudaMemcpy(h_data.data(), d_data, row*col*sizeof(T), cudaMemcpyDeviceToHost));
+            else CHECK_CUDA(cudaMemcpyAsync(h_data.data(), d_data, row*col*sizeof(T), cudaMemcpyDeviceToHost, str));
             host_valid = true;
         }
     
@@ -1107,15 +1109,15 @@ namespace d_matrix_ver2{
         T val;
         switch (type) {
             case InitType::He: {
-                val = curand_normal(&localState) * sqrtf(2.0f / row);
+                val = curand_normal(&localState) * sqrt(2.0 / (double)row);
                 break;
             }
             case InitType::Xavier: {
-                val = curand_normal(&localState) * sqrtf(1.0f / row);
+                val = curand_normal(&localState) * sqrt(1.0 / (double)row);
                 break;
             }
             case InitType::Uniform: {
-                val = (curand_uniform(&localState) * 2.0f) - 1.0f;
+                val = (curand_uniform(&localState) * 2.0) - 1.0;
                 break;
             }
         }

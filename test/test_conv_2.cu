@@ -74,62 +74,52 @@ public:
 
       // conv1: N=bs, C=1, H=W=28, K=8, R=S=3, pad=1, stride=1
       conv1_opt(8, 1*3*3, 0.0001, p2::layerType::conv),
-      conv1Act(bs, 8*28*28, p2::ActType::Tanh),
-      conv1(bs,1,28,28,  8,3,3, 1,1, 1,1, &conv1_opt, d2::InitType::Xavier),
+      conv1Act(p2::ActType::LReLU),
+      conv1(bs,1,28,28,  8,3,3, 1,1, 1,1, &conv1_opt, d2::InitType::He, hs.model_str),
 
       // conv2: N=bs, C=8, H=W=28, K=16, R=S=3, pad=1, stride=2 → out:16×14×14
       conv2_opt(16, 8*3*3, 0.0001, p2::layerType::conv),
-      conv2Act(bs, 16*14*14, p2::ActType::Tanh),
-      conv2(bs,8,28,28, 16,3,3, 1,1, 2,2, &conv2_opt, d2::InitType::Xavier),
+      conv2Act(p2::ActType::LReLU),
+      conv2(bs, 8,28,28, 16,3,3, 1,1, 2,2, &conv2_opt, d2::InitType::He, hs.model_str),
 
       // fc1: 16*14*14 → 128
       fc1_opt(16*14*14, 128, 0.0001),
-      fc1Act(bs, 128, p2::ActType::Tanh),
-      fc1(bs, 16*14*14, 128, &fc1_opt, d2::InitType::Xavier),
+      fc1Act(p2::ActType::LReLU),
+      fc1(bs, 16*14*14, 128, &fc1_opt, d2::InitType::He, hs.model_str),
 
       // fc2: 128 → 10 (클래스 개수)
       fc2_opt(128, 10, 0.0001),
-      fc2Act(bs, 10, p2::ActType::Identity),
-      fc2(bs, 128, 10, &fc2_opt, d2::InitType::Xavier),
+      fc2Act(p2::ActType::Identity),
+      fc2(bs, 128, 10, &fc2_opt, d2::InitType::He, hs.model_str),
 
       // 크로스엔트로피 손실
-      loss(bs, 10, p2::LossType::CrossEntropy)
+      loss(p2::LossType::CrossEntropy)
     {}
 
     // 한 배치에 대한 순전파
     d2::d_matrix_2<double> forward(const d2::d_matrix_2<double>& X, cudaStream_t str) {
 
         conv1.forward(X, str);
-        conv1Act.Active(conv1.getOutput(), str);
+        auto conv_a1 = conv1Act.Active(conv1.getOutput(), str);
 
         // conv2
-        conv2.forward(conv1Act.getOutput(), str);
-        conv2Act.Active(conv2.getOutput(), str);
+        conv2.forward(conv_a1, str);
+        auto conv_a2 = conv2Act.Active(conv2.getOutput(), str);
 
         // fc1
-        fc1.feedforward(conv2Act.getOutput(), str);
-        fc1Act.Active(fc1.getOutput(), str);
+        fc1.feedforward(conv_a2, str);
+        auto fc_a1 = fc1Act.Active(fc1.getOutput(), str);
 
         // fc2
-        fc2.feedforward(fc1Act.getOutput(), str);
+        fc2.feedforward(fc_a1, str);
         fc2Act.Active(fc2.getOutput(), str);
 
-        //auto forDebugfc2Act = fc2Act.getOutput();
-        //forDebugfc2Act.cpyToHost();
-        //auto forDebugfc2 = fc2.getOutput();
-        //forDebugfc2.cpyToHost();
-        //auto forDebugfc1Act = fc1Act.getOutput();
-        //forDebugfc1Act.cpyToHost();
-        //auto forDebugfc1 = fc1.getOutput();
-        //forDebugfc1.cpyToHost();
 
-
-        return fc2Act.getOutput();
+        return fc2Act.Active(fc2.getOutput(), str);
     }
 
     // 학습 루프
     void train(d2::d_matrix_2<double>& X, d2::d_matrix_2<double>& Y, int epochs) {
-        d2::d_matrix_2<double> dummy;
         int N = X.getRow();
         int B = batch_size;
         int num_batches = (N + B - 1) / B;
@@ -143,15 +133,11 @@ public:
         std::cout << std::endl;
         std::cout << "[batch load complete]" << std::endl;
         std::string prograss_avgloss;
-        for(int e = 1; e <= epochs; ++e) {
+        for(int e = 1; e <= epochs; e++) {
             double avgloss = 0;
-            for(int j = 0; j < num_batches; ++j){
+            for(int j = 0; j < num_batches; j++){
                 // 순전파
                 auto Ypred = forward(batch[j], hs.model_str);
-
-                //디버깅용
-                //Ypred.cpyToHost();
-                //labels[j].cpyToHost();
     
                 // 손실 계산
                 double L = loss.getLoss(Ypred, labels[j], hs.model_str);
@@ -185,7 +171,7 @@ public:
                 printProgressBar(e, epochs, start, prograss_avgloss + " | " + prograss_batch + " 의 " + prograss_loss);
             }
             avgloss = avgloss/static_cast<double>(num_batches);
-            prograss_avgloss = "[epoch" + std::to_string(e) + "/" + std::to_string(epochs) + "의 avgloss]:" + std::to_string(avgloss);
+            prograss_avgloss = "[epoch" + std::to_string(e+1) + "/" + std::to_string(epochs) + "의 avgloss]:" + std::to_string(avgloss);
         }
         std::cout << std::endl;
         std::cout << "총 학습 시간: "
@@ -196,7 +182,7 @@ public:
 };
 
 int main(){
-    constexpr int BATCH  = 500;
+    constexpr int BATCH  = 60;
     constexpr int EPOCHS = 100;
 
     // MNIST 데이터 로드
