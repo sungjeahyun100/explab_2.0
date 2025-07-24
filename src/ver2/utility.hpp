@@ -7,9 +7,12 @@
 #include <ver2/d_matrix_2.hpp>
 #include <stdexcept>
 
-const std::string GRAPH_PATH = "../graph";
+inline const std::string& getGraphPath() {
+    static const std::string GRAPH_PATH = "../graph";
+    return GRAPH_PATH;
+}
 
-std::string getCurrentTimestamp()
+inline std::string getCurrentTimestamp()
 {
     auto now = std::chrono::system_clock::now();
     std::time_t t_now = std::chrono::system_clock::to_time_t(now);
@@ -20,7 +23,7 @@ std::string getCurrentTimestamp()
     return oss.str();
 }
 
-void printProgressBar(int current, int total, std::chrono::steady_clock::time_point startTime, std::string processname) {
+inline void printProgressBar(int current, int total, std::chrono::steady_clock::time_point startTime, std::string processname) {
     int width = 50;
     float progress = static_cast<float>(current) / total;
     int pos = static_cast<int>(width * progress);

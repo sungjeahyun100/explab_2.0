@@ -24,6 +24,7 @@ nvcc -std=c++20 \
     -g \
     -expt-extended-lambda \
     -I "$PROJECT_ROOT/src" \
+    "$PROJECT_ROOT/src/ver2/d_matrix_2.cu" \
     "$PROJECT_ROOT/test/test_conv_2.cu" \
     -o "$BUILD_DIR/test_con" \
     -lcurl \
@@ -31,5 +32,18 @@ nvcc -std=c++20 \
     -lcudnn \
     -Xcompiler="-pthread"
 echo "✅ build/test_con 빌드 완료"
+
+nvcc -std=c++20 \
+    -G \
+    -g \
+    -expt-extended-lambda \
+    -I "$PROJECT_ROOT/src" \
+    "$PROJECT_ROOT/src/ver2/d_matrix_2.cu" \
+    "$PROJECT_ROOT/src/ver2/GOLdatabase_2.cu" \
+    "$PROJECT_ROOT/test/test_GOL_2.cu" \
+    -o "$BUILD_DIR/test_gol" \
+    -lcurand \
+    -Xcompiler="-pthread"
+echo "✅ build/test_gol 빌드 완료"
 
 

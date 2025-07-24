@@ -1082,12 +1082,8 @@ namespace d_matrix_ver2{
         return C;
     }
     
-    // 1) cuRAND state initialization kernel
-    __global__ void initCurandStates(curandState *states, unsigned long long seed, int total) {
-        int idx = blockIdx.x * blockDim.x + threadIdx.x;
-        if (idx >= total) return;
-        curand_init(seed, idx, 0, &states[idx]);
-    }
+    // 1) cuRAND state initialization kernel declaration
+    __global__ void initCurandStates(curandState *states, unsigned long long seed, int total);
     
     // 2) Weight initialization kernel using cuRAND
     template<typename T>
