@@ -59,6 +59,22 @@ namespace perceptron_2 {
             }
     };
 
+    __global__ void setGradThreshold(double* d_g, double* d_out, double threshold, int N){ // N = d_g row*col
+        int idx = blockDim.x*blockIdx.x+threadIdx.x;
+        if(idx >= N) return;
+
+        double gi = d_g[idx];
+        const double clip_threshold = threshold; // gradient clipping threshold
+        if (isnan(gi) || isinf(gi)) {
+            gi = 0.0; // NaN/Inf를 0으로 클리핑
+        } else if (gi > clip_threshold) {
+            gi = clip_threshold;
+        } else if (gi < -clip_threshold) {
+            gi = -clip_threshold;
+        }
+        d_out[idx] = gi;
+    }
+
     class optimizer{
         public:
             virtual ~optimizer() = default;
@@ -66,12 +82,20 @@ namespace perceptron_2 {
     };
 
     class SGD : public optimizer {
-        double lr;
+        double lr, th;
     public:
-        explicit SGD(double lr_) : lr(lr_) {}
+        explicit SGD(double lr_, double threshold=5.0) : lr(lr_), th(threshold) {}
         void update(d2::d_matrix_2<double>& W, d2::d_matrix_2<double>& B, const d2::d_matrix_2<double>& gW, const d2::d_matrix_2<double>& gB, cudaStream_t str) override {
-            W = d2::matrixPlus(W, d2::ScalaProduct(gW, -lr, str), str);
-            B = d2::matrixPlus(B, d2::ScalaProduct(gB, -lr, str), str);
+            d2::d_matrix_2<double> gW_modified(gW.getRow(), gW.getCol(), str);
+            d2::d_matrix_2<double> gB_modified(1, gB.getCol(), str);
+            int gW_N = gW_modified.size();
+            int gB_N = gB_modified.size();
+            setGradThreshold<<<(gW_N + 32 -1)/32, 32, 0, str>>>(gW.getDevPointer(), gW_modified.getDevPointer(), th, gW_N);
+            getErr();
+            setGradThreshold<<<(gB_N + 32 -1)/32, 32, 0, str>>>(gB.getDevPointer(), gB_modified.getDevPointer(), th, gB_N);
+            getErr();
+            W = d2::matrixPlus(W, d2::ScalaProduct(gW_modified, -lr, str), str);
+            B = d2::matrixPlus(B, d2::ScalaProduct(gB_modified, -lr, str), str);
         }
     };
 
@@ -86,38 +110,49 @@ namespace perceptron_2 {
         double        eps,
         double        bc1,
         double        bc2,
-        int           N      // 총 원소 수 = row*col
+        int           N,      // 총 원소 수 = row*col
+        double threshold
     ) {
         int idx = blockIdx.x*blockDim.x + threadIdx.x;
         if (idx >= N) return;
     
-        // 1) 모멘텀·분산 업데이트
+        // 1) gradient clipping 추가 (NaN 방지)
         double gi = d_g[idx];
+        const double clip_threshold = threshold; // gradient clipping threshold
+        if (isnan(gi) || isinf(gi)) {
+            gi = 0.0; // NaN/Inf를 0으로 클리핑
+        } else if (gi > clip_threshold) {
+            gi = clip_threshold;
+        } else if (gi < -clip_threshold) {
+            gi = -clip_threshold;
+        }
+    
+        // 2) 모멘텀·분산 업데이트
         double m  = d_M[idx] = d_M[idx]*beta1 + gi*(1.0-beta1);
         double v  = d_V[idx] = d_V[idx]*beta2 + gi*gi*(1.0-beta2);
     
-        // 2) 편향 보정된 모멘텀·분산
+        // 3) 편향 보정된 모멘텀·분산
         double m_hat = m / bc1;
         double v_hat = v / bc2;
     
-        // 3) 파라미터 업데이트
+        // 4) 파라미터 업데이트
         double inv = 1.0 / (sqrt(v_hat) + eps); // 1/(sqrt(v_hat)+eps)
         d_W[idx]   -= lr * m_hat * inv;
     }
     
     class Adam : public optimizer {
-        double lr, beta1, beta2, eps;
+        double lr, beta1, beta2, eps, th;
         int t;
         // weight: row×col, bias: 1×col
         d2::d_matrix_2<double> mW, vW;  // same shape as W
         d2::d_matrix_2<double> mB, vB;  // 1×col
         layerType layer;
     public:
-        Adam(int row, int col, double lr_, layerType l = layerType::perceptron, double b1=0.9, double b2=0.999, double e=1e-8)
-          : lr(lr_), beta1(b1), beta2(b2), eps(e), t(0), layer(l),
-            mW(row, col), vW(row, col),
-            mB(1, layer==layerType::conv ? row : col),
-            vB(1, layer==layerType::conv ? row : col)
+        Adam(int row, int col, double lr_, layerType l = layerType::perceptron, cudaStream_t str=0, double b1=0.9, double b2=0.999, double e=1e-8, double threshold=5.0)
+          : lr(lr_), beta1(b1), beta2(b2), eps(e), t(0), layer(l), th(threshold),
+            mW(row, col, str), vW(row, col, str),
+            mB(1, layer==layerType::conv ? row : col, str),
+            vB(1, layer==layerType::conv ? row : col, str)
         {
             mW.fill(0.0);  vW.fill(0.0);
             mB.fill(0.0);  vB.fill(0.0);
@@ -150,7 +185,8 @@ namespace perceptron_2 {
                 vW.getDevPointer(),
                 beta1, beta2, lr, eps,
                 bc1, bc2,
-                Nw
+                Nw,
+                th
             );
             getErr();
             // 2) bias 업데이트 (이제 B는 1×col 이므로 N_B = cols)
@@ -161,7 +197,8 @@ namespace perceptron_2 {
                 vB.getDevPointer(),
                 beta1, beta2, lr, eps,
                 bc1, bc2,
-                Nb
+                Nb,
+                th
             );
             getErr();
     
@@ -212,15 +249,14 @@ namespace perceptron_2 {
     
             PerceptronLayer(int n, int i, int o, optimizer* optimizer, d2::InitType init, cudaStream_t str)
                 : inputSize(i), outputSize(o), sample_num(n),
-                  input(n, i), weight(i, o), bias(1, o), dX(n, i),
-                  output(n, o), delta(n, o), gradW(i, o), gradB(1, o), opt(optimizer){
+                  input(n, i, str), weight(i, o, str), bias(1, o, str), dX(n, i, str),
+                  output(n, o, str), delta(n, o, str), gradW(i, o, str), gradB(1, o, str), opt(optimizer){
                 cudaGetDevice(&deviceId);
                 cudaGetDeviceProperties(&props, deviceId);
                 threadsPerBlock = props.maxThreadsPerBlock;
                 numberOfBlocks = props.multiProcessorCount;
                 weight = d2::InitWeight<double>(i, o, init, str);
                 bias.fill(0.01, str);
-                i_t.resize(inputSize, n);
             }
     
             const d2::d_matrix_2<double>& getWeight() const { return weight; }
@@ -490,10 +526,11 @@ namespace perceptron_2 {
                 // 2) 소프트맥스 확률 계산
                 d2::d_matrix_2<double> p = softmax_efficient(out, str);
     
-                // 3) gradient = (p - y) / N
+                // 3) gradient = (p - y) / N  -- 중요: N으로 정규화 필요!
                 d2::d_matrix_2<double> grad = matrixPlus(p, ScalaProduct(target, -1.0, str), str);
+                auto result = ScalaProduct(grad, 1.0 / static_cast<double>(N), str);
                 cudaStreamSynchronize(str);
-                return grad;
+                return result;
             }
     
             default:
@@ -674,7 +711,7 @@ namespace perceptron_2 {
             getErr();
       
             // 3) gradW 계산
-            const double alpha=1.0/static_cast<double>(N), beta=0.0;
+            const double alpha=1.0, beta=0.0; // alpha를 1.0으로 변경 (gradient scaling 완화)
             CHK_CUDNN(cudnnSetStream(_handle, str));
             CHK_CUDNN(cudnnConvolutionBackwardFilter(
                 _handle, &alpha,

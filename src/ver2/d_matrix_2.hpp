@@ -1,4 +1,3 @@
-
 #pragma once
 #include <cuda_runtime.h>
 #include <curand_kernel.h>
@@ -129,20 +128,20 @@ namespace d_matrix_ver2{
         bool host_valid = true;
         bool dev_valid = true;
     public:
-        d_matrix_2(int r, int c) : row(r), col(c) {
+        d_matrix_2(int r, int c, cudaStream_t str=0) : row(r), col(c) {
             if (row <= 0 || col <= 0) {
                 std::cerr << "[ERROR] Invalid d_matrix_2 dimensions: " << row << "x" << col << std::endl;
                 exit(1);
             }
             h_data.resize(r*c);
-            CHECK_CUDA(cudaMalloc(&d_data, r*c*sizeof(T)));
-            CHECK_CUDA(cudaMemset(d_data, 0, r*c*sizeof(T)));
+            CHECK_CUDA(cudaMallocAsync(&d_data, r*c*sizeof(T), str));
+            CHECK_CUDA(cudaMemsetAsync(d_data, 0, r*c*sizeof(T), str));
         }
     
-        d_matrix_2() : row(1), col(1){
+        d_matrix_2(cudaStream_t str=0) : row(1), col(1){
             h_data.resize(row*col);
-            CHECK_CUDA(cudaMalloc(&d_data, row*col*sizeof(T)));
-            CHECK_CUDA(cudaMemset(d_data, 0, row*col*sizeof(T)));
+            CHECK_CUDA(cudaMallocAsync(&d_data, row*col*sizeof(T), str));
+            CHECK_CUDA(cudaMemsetAsync(d_data, 0, row*col*sizeof(T), str));
         }
     
         //중괄호 생성자
@@ -1196,5 +1195,6 @@ namespace std {
         }
     };
 }
+
 
 

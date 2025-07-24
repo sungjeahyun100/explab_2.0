@@ -73,22 +73,22 @@ public:
     : batch_size(bs),
 
       // conv1: N=bs, C=1, H=W=28, K=8, R=S=3, pad=1, stride=1
-      conv1_opt(8, 1*3*3, 0.0001, p2::layerType::conv),
+      conv1_opt(8, 1*3*3, 0.00001, p2::layerType::conv, hs.model_str), 
       conv1Act(p2::ActType::LReLU),
       conv1(bs,1,28,28,  8,3,3, 1,1, 1,1, &conv1_opt, d2::InitType::He, hs.model_str),
 
       // conv2: N=bs, C=8, H=W=28, K=16, R=S=3, pad=1, stride=2 → out:16×14×14
-      conv2_opt(16, 8*3*3, 0.0001, p2::layerType::conv),
+      conv2_opt(16, 8*3*3, 0.00001, p2::layerType::conv, hs.model_str), 
       conv2Act(p2::ActType::LReLU),
       conv2(bs, 8,28,28, 16,3,3, 1,1, 2,2, &conv2_opt, d2::InitType::He, hs.model_str),
 
       // fc1: 16*14*14 → 128
-      fc1_opt(16*14*14, 128, 0.0001),
+      fc1_opt(16*14*14, 128, 0.00001, p2::layerType::perceptron, hs.model_str), 
       fc1Act(p2::ActType::LReLU),
       fc1(bs, 16*14*14, 128, &fc1_opt, d2::InitType::He, hs.model_str),
 
       // fc2: 128 → 10 (클래스 개수)
-      fc2_opt(128, 10, 0.0001),
+      fc2_opt(128, 10, 0.00001, p2::layerType::perceptron, hs.model_str), 
       fc2Act(p2::ActType::Identity),
       fc2(bs, 128, 10, &fc2_opt, d2::InitType::He, hs.model_str),
 
@@ -182,7 +182,7 @@ public:
 };
 
 int main(){
-    constexpr int BATCH  = 60;
+    constexpr int BATCH  = 600;
     constexpr int EPOCHS = 100;
 
     // MNIST 데이터 로드
