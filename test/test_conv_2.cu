@@ -186,8 +186,8 @@ int main(){
     constexpr int EPOCHS = 100;
 
     // MNIST 데이터 로드
-    auto X = load_images_matrix("/home/sjh100/바탕화면/explab_ver2/test/train-images-idx3-ubyte");
-    auto Y = load_labels_matrix("/home/sjh100/바탕화면/explab_ver2/test/train-labels-idx1-ubyte", 10);
+    auto X = load_images_matrix("/home/sjh100/바탕화면/explab_ver2/test/mnist_data/train-images-idx3-ubyte");
+    auto Y = load_labels_matrix("/home/sjh100/바탕화면/explab_ver2/test/mnist_data/train-labels-idx1-ubyte", 10);
 
     mnist_solver_adam solver(BATCH);
     solver.train(X, Y, EPOCHS);

@@ -40,14 +40,20 @@ namespace GOL_2 {
     // Game of Life 데이터 생성
     void generateGameOfLifeData(int filenum, double ratio);
 
-    // 데이터 로딩
-    std::vector<std::pair<d_matrix_2<double>, d_matrix_2<double>>> LoadingData();
+    // 데이터 로딩 (구형 - 개별 샘플)
+    std::vector<std::pair<d_matrix_2<double>, d_matrix_2<double>>> LoadingData(cudaStream_t str = 0);
+
+    // 데이터 로딩 (신형 - 배치 형태)
+    std::pair<d_matrix_2<double>, d_matrix_2<double>> LoadingDataBatch(cudaStream_t str = 0);
 
     // 시뮬레이션 및 라벨링 (최종 패턴 반환)
     d_matrix_2<int> simulateAndLabelingtopattern(const d_matrix_2<int>& initialPattern, int fileId, cudaStream_t str = 0);
 
     // 시뮬레이션 및 라벨링 (살아있는 셀 개수 반환)
     int simulateAndLabel(const d_matrix_2<int>& initialPattern, int fileId, cudaStream_t str = 0);
+
+    // 최적화: 단일 시뮬레이션으로 패턴과 라벨을 동시에 반환
+    std::pair<d_matrix_2<int>, int> simulateAndGetBoth(const d_matrix_2<int>& initialPattern, int fileId, cudaStream_t str = 0);
 
     // 패턴 배치 커널
     __global__ void placePatternKernel(

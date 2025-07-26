@@ -7,11 +7,6 @@
 #include <ver2/d_matrix_2.hpp>
 #include <stdexcept>
 
-inline const std::string& getGraphPath() {
-    static const std::string GRAPH_PATH = "../graph";
-    return GRAPH_PATH;
-}
-
 inline std::string getCurrentTimestamp()
 {
     auto now = std::chrono::system_clock::now();
@@ -42,6 +37,7 @@ inline void printProgressBar(int current, int total, std::chrono::steady_clock::
     std::cout << "(경과 시간: " << elapsedSec << " ms)                      \r";
     std::cout.flush();
 }
+
 
 
 // 읽을 idx 파일의 32비트 정수를 빅엔디안으로 파싱

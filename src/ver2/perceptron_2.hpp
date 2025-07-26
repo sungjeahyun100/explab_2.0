@@ -320,15 +320,11 @@ namespace perceptron_2 {
     // 지원: ReLU, LReLU, Identity, Sigmoid
     // d_Active: 미분값 반환
     class ActivateLayer{
-        private:
-            ActType act;
         public:
-            // 생성자: 행, 열, 활성화 종류 지정
-            ActivateLayer(ActType a) : act(a){}
             // 활성화 적용 (output = f(input))
-            d2::d_matrix_2<double> Active(const d2::d_matrix_2<double>& z, cudaStream_t str);
+            d2::d_matrix_2<double> Active(const d2::d_matrix_2<double>& z, ActType act, cudaStream_t str);
             // 활성화 미분값 반환 (f'(z))
-            d2::d_matrix_2<double> d_Active(const d2::d_matrix_2<double>& z, cudaStream_t str);
+            d2::d_matrix_2<double> d_Active(const d2::d_matrix_2<double>& z, ActType act, cudaStream_t str);
     };
     
     // LossLayer--------------------------------------------------------------------------------------------------------------------------------
@@ -338,15 +334,11 @@ namespace perceptron_2 {
     // 지원: MSE(평균제곱오차), CrossEntropy(크로스엔트로피)
     // getLoss: loss 반환, getGrad: dL/dz 반환
     class LossLayer{
-        private:
-            LossType Loss;
         public:
-            // 생성자: 행, 열, 손실 종류 지정
-            LossLayer(LossType L) : Loss(L){}
             // 손실값 반환
-            double getLoss(d2::d_matrix_2<double> out, d2::d_matrix_2<double> target, cudaStream_t str);
+            double getLoss(d2::d_matrix_2<double> out, d2::d_matrix_2<double> target, LossType Loss, cudaStream_t str);
             // 손실 미분 반환
-            d2::d_matrix_2<double> getGrad(d2::d_matrix_2<double> out, d2::d_matrix_2<double> target, cudaStream_t str);
+            d2::d_matrix_2<double> getGrad(d2::d_matrix_2<double> out, d2::d_matrix_2<double> target, LossType Loss, cudaStream_t str);
             inline dim3 grid2d(int rows, int cols) {
                 return dim3(
                   (cols + TILE-1)/TILE,   // x-direction = #tiles across columns
@@ -360,7 +352,7 @@ namespace perceptron_2 {
 
     // 활성화 적용 (output = f(input))
     // 지원: ReLU, LReLU, Identity, Sigmoid
-    d2::d_matrix_2<double> ActivateLayer::Active(const d2::d_matrix_2<double>& z, cudaStream_t str = 0){
+    d2::d_matrix_2<double> ActivateLayer::Active(const d2::d_matrix_2<double>& z, ActType act, cudaStream_t str = 0){
         switch (act) {
             case ActType::ReLU:
                 return d2::MatrixActivate<double, d2::relu>(z, str); break;
@@ -392,7 +384,7 @@ namespace perceptron_2 {
     // LReLU: 1(x>0), 0.01(x<=0)
     // Identity: 1
     // Sigmoid: σ'(x) = σ(x)(1-σ(x))
-    d2::d_matrix_2<double> ActivateLayer::d_Active(const d2::d_matrix_2<double>& z, cudaStream_t str) {
+    d2::d_matrix_2<double> ActivateLayer::d_Active(const d2::d_matrix_2<double>& z, ActType act, cudaStream_t str=0) {
         switch (act) {
             case ActType::ReLU:
                 return d2::MatrixActivate<double, d2::d_relu>(z, str); 
@@ -438,7 +430,7 @@ namespace perceptron_2 {
     // 손실값 반환
     // MSE: L = 1/n Σ(y-p)^2
     // CrossEntropy: L = -Σ y log(softmax(p))
-    double LossLayer::getLoss(d2::d_matrix_2<double> out, d2::d_matrix_2<double> target, cudaStream_t str = 0) {
+    double LossLayer::getLoss(d2::d_matrix_2<double> out, d2::d_matrix_2<double> target, LossType Loss, cudaStream_t str = 0) {
         switch (Loss) {
             case LossType::MSE: {
                 int N = out.getRow();
@@ -509,7 +501,7 @@ namespace perceptron_2 {
     // 손실 미분 반환
     // MSE: dL/dz = 2(y-p)
     // CrossEntropy: dL/dz = softmax(p) - y
-    d2::d_matrix_2<double> LossLayer::getGrad(d2::d_matrix_2<double> out, d2::d_matrix_2<double> target, cudaStream_t str = 0) {
+    d2::d_matrix_2<double> LossLayer::getGrad(d2::d_matrix_2<double> out, d2::d_matrix_2<double> target, LossType Loss, cudaStream_t str = 0) {
     
         switch (Loss) {
             case LossType::MSE: {

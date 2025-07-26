@@ -210,6 +210,55 @@ namespace GOL_2 {
         return sim;
     }
 
+    // 최적화: 단일 시뮬레이션으로 패턴과 라벨을 동시에 반환
+    std::pair<d_matrix_2<int>, int> simulateAndGetBoth(const d_matrix_2<int>& initialPattern, int fileId, cudaStream_t str) {
+        d_matrix_2<int> sim = initialPattern;
+        std::deque<int> history; // 최근 50개 alive 수 저장
+        const int window = 50;
+
+        int constantCount = 0;
+        int prev = -1;
+        bool strictlyIncreasing = true;
+        int gen = 0;
+
+        while (gen < MAXGEN) {
+            int alive = countAlive(sim, str);
+
+            // history 갱신
+            if (history.size() >= window) history.pop_front();
+            history.push_back(alive);
+
+            if (prev == alive) constantCount++;
+            else constantCount = 0;
+
+            if (prev != -1 && alive <= prev) strictlyIncreasing = false;
+            
+            // 더 빠른 조기 종료: 안정화 감지 개선
+            if (constantCount >= 30) break;  // 30 세대 연속 동일 → 안정화
+            if (strictlyIncreasing && gen >= 50) break;  // 50 세대 연속 증가 → 발산
+            if (alive == 0) break;  // 모든 셀 사망 → 소멸
+            
+            // 진동 패턴 감지: 최근 기록에서 반복 확인
+            if (history.size() >= 20) {
+                bool oscillating = true;
+                int period = 2;  // 2주기 진동 확인
+                for (int i = 0; i < 10 && oscillating; i++) {
+                    if (history[history.size()-1-i] != history[history.size()-1-i-period]) {
+                        oscillating = false;
+                    }
+                }
+                if (oscillating) break;  // 진동 패턴 감지 시 조기 종료
+            }
+
+            prev = alive;
+            sim = nextGen(sim, str);
+            gen++;
+        }
+
+        int final_count = countAlive(sim, str);
+        return {std::move(sim), final_count};
+    }
+
     void generateGameOfLifeData(int filenum, double ratio) {
         int deviceCount = 0;
         cudaError_t err = cudaGetDeviceCount(&deviceCount);
@@ -228,7 +277,7 @@ namespace GOL_2 {
         int totalFiles = filenum;
         double aliveratio = ratio;
 
-        std::cout << "totalFiles:" << totalFiles << " (file direction: ../dataset)" << std::endl;
+        std::cout << "totalFiles:" << totalFiles << " (file direction: " << DATASET_PATH << ")" << std::endl;
         std::cout << "aliveratio:" << aliveratio << std::endl;
         std::cout << "max generation:" << MAXGEN << std::endl;
         std::cout << "pattern size:" << HEIGHT << " * " << WIDTH << std::endl;
@@ -240,18 +289,21 @@ namespace GOL_2 {
         auto startTime = std::chrono::steady_clock::now();
 
         for (int fileId = 1; fileId <= totalFiles; ++fileId) {
-            int label = -1;
             d_matrix_2<int> pattern = generateFixedRatioPatternWithPadding(BOARDHEIGHT, BOARDWIDTH, HEIGHT, WIDTH, aliveratio, stream);
-            d_matrix_2<int> last_pattern = simulateAndLabelingtopattern(pattern, fileId, stream);
-            label = simulateAndLabel(pattern, fileId, stream);
+            
+            // 단일 시뮬레이션으로 최종 패턴과 라벨을 동시에 얻음
+            auto [last_pattern, label] = simulateAndGetBoth(pattern, fileId, stream);
 
             std::ofstream fout(DATASET_PATH + "sample" + std::to_string(fileId) + ".txt");
 
             int startRow = (BOARDHEIGHT - HEIGHT) / 2;
             int startCol = (BOARDWIDTH - WIDTH) / 2;
 
-            // 초기 패턴을 호스트로 복사
-            pattern.cpyToHost();
+            // 초기 패턴을 호스트로 복사 (비동기)
+            pattern.cpyToHost(stream);
+            
+            // GPU 작업이 완료될 때까지 대기
+            cudaStreamSynchronize(stream);
 
             // 초기 패턴 저장
             for (int i = startRow; i < startRow + HEIGHT; ++i) {
@@ -264,8 +316,9 @@ namespace GOL_2 {
             fout << label << '\n';
             fout << '\n';
 
-            // 최종 패턴을 호스트로 복사
-            last_pattern.cpyToHost();
+            // 최종 패턴을 호스트로 복사 (비동기)
+            last_pattern.cpyToHost(stream);
+            cudaStreamSynchronize(stream);
 
             // 최종 패턴 저장
             for(int i = 0; i < BOARDHEIGHT; i++){
@@ -276,7 +329,12 @@ namespace GOL_2 {
             }
 
             fout.close();
-            printProgressBar(fileId, totalFiles, startTime, "");
+            
+            // 진행률 표시 최적화: 매 10번째마다만 업데이트
+            if (fileId % 10 == 0 || fileId == totalFiles) {
+                std::string prograss_name = "GOL data generating... " + std::to_string(fileId) + "/" + std::to_string(totalFiles);
+                printProgressBar(fileId, totalFiles, startTime, prograss_name);
+            }
         }
         
         std::cout << std::endl << "[Done] Dataset generation complete." << std::endl;
@@ -288,14 +346,11 @@ namespace GOL_2 {
         cudaStreamDestroy(stream);
     }
 
-    std::vector<std::pair<d_matrix_2<double>, d_matrix_2<double>>> LoadingData() {
-        std::vector<std::pair<d_matrix_2<double>, d_matrix_2<double>>> dataset;
-        dataset.reserve(1000);
+    std::pair<d_matrix_2<double>, d_matrix_2<double>> LoadingDataBatch(cudaStream_t str) {
+        std::vector<std::pair<d_matrix_2<double>, d_matrix_2<double>>> temp_dataset;
+        temp_dataset.reserve(5000);  // 4000개 + 여유분
 
-        // 스트림 생성
-        cudaStream_t stream;
-        cudaStreamCreate(&stream);
-
+        // 파일들을 읽어서 임시 벡터에 저장
         for (const auto& entry : fs::directory_iterator(DATASET_PATH)) {
             if (entry.path().extension() != ".txt") continue;
 
@@ -305,7 +360,7 @@ namespace GOL_2 {
                 continue;
             }
 
-            d_matrix_2<double> input(WIDTH*HEIGHT, 1, stream);
+            d_matrix_2<double> input(WIDTH*HEIGHT, 1, str);
             std::string line;
             int row = 0;
             while (row < WIDTH && std::getline(fin, line)) {
@@ -319,21 +374,49 @@ namespace GOL_2 {
             int label_index = -1;
             if (std::getline(fin, line)) label_index = std::stoi(line);
 
-            d_matrix_2<double> label(BIT_WIDTH, 1, stream);
+            d_matrix_2<double> label(BIT_WIDTH, 1, str);
             // 1) 모두 0으로 초기화
-            label.fill(0.0, stream);
+            label.fill(0.0, str);
             // 2) 각 비트 위치에 0/1 설정 (LSB부터)
             for (int b = 0; b < BIT_WIDTH; ++b) {
                 label(b, 0) = (label_index >> b) & 1;
             }
 
-            input.cpyToDev();
-            label.cpyToDev();
-            dataset.emplace_back(std::move(input), std::move(label));
+            input.cpyToDev(str);
+            label.cpyToDev(str);
+            temp_dataset.emplace_back(std::move(input), std::move(label));
         }
 
-        cudaStreamDestroy(stream);
-        return dataset;
+        int N = temp_dataset.size();
+        std::cout << "로드된 데이터 개수: " << N << std::endl;
+
+        // 배치 친화적인 형태로 변환: (N, features) 형태의 행렬 2개
+        d_matrix_2<double> X(N, WIDTH*HEIGHT, str);  // 입력 행렬: (샘플수, 특성수)
+        d_matrix_2<double> Y(N, BIT_WIDTH, str);     // 라벨 행렬: (샘플수, 클래스수)
+
+        // 데이터 복사
+        for (int i = 0; i < N; i++) {
+            temp_dataset[i].first.cpyToHost(str);
+            temp_dataset[i].second.cpyToHost(str);
+            cudaStreamSynchronize(str);
+
+            // 입력 데이터 복사
+            for (int j = 0; j < WIDTH*HEIGHT; j++) {
+                X(i, j) = temp_dataset[i].first.getHostPointer()[j];
+            }
+
+            // 라벨 데이터 복사
+            for (int j = 0; j < BIT_WIDTH; j++) {
+                Y(i, j) = temp_dataset[i].second.getHostPointer()[j];
+            }
+        }
+
+        // GPU로 전송
+        X.cpyToDev(str);
+        Y.cpyToDev(str);
+        cudaStreamSynchronize(str);
+
+        return {std::move(X), std::move(Y)};
     }
 
 } // namespace GOL_2
