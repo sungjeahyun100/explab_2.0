@@ -140,8 +140,8 @@ class GOLsolver_1{
             std::cout << "[배치 로드 완료] 총 " << N << "개 데이터, " << num_batches << "개 배치" << std::endl;
             
             // Loss 데이터 저장을 위한 파일 생성
-            std::ofstream epoch_loss_file("../graph/epoch_loss.txt");
-            std::ofstream batch_loss_file("../graph/batch_loss.txt");
+            std::ofstream epoch_loss_file("../graph/epoch_loss-" + getCurrentTimestamp() + ".txt");
+            std::ofstream batch_loss_file("../graph/batch_loss-" + getCurrentTimestamp() + ".txt");
             
             // 훈련 루프
             std::string progress_avgloss;

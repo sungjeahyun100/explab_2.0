@@ -1,9 +1,10 @@
+#include "chess_2.hpp"
+
 // 체스판 인덱스 시각화 (row, col):
 //   파일:   0 1 2 3 4 5 6 7   (a b c d e f g h)
 // 랭크(행): 0 1 2 3 4 5 6 7   (8 7 6 5 4 3 2 1)
 // 예: board(0,0) = a8, board(7,7) = h1
 //
-#include "chess.hpp"
 
 #define MAX_MOVES_PER_PIECE 27  // 퀸이 최악 슬라이딩 시 최대 이동수
 
@@ -266,7 +267,7 @@ piece::piece(pieceColor c, pieceType t, int r, int f)
     file = f;
 }
 
-chessboard::chessboard(positionType pT) : board(8, 8)
+chessboard::chessboard(positionType pT, cudaStream_t stream) : board(8, 8), str(stream)
 {
     ptype = pT;
     auto &pos = positionTableForDebug[ptype];
@@ -555,7 +556,7 @@ __global__ void genLegalMovesKernel(
             break;
         }
         case pieceType::PAWN:{
-            // 전진 & 캡쳐
+            // 전진
                 int forward = (p.C == pieceColor::WHITE) ? -1 : +1;
                 int nr = r0 + forward;
                 int nf = f0;
@@ -581,6 +582,7 @@ __global__ void genLegalMovesKernel(
                         }
                     }
                 }
+                // 캡쳐
                 for (int df : { -1, +1 }) {
                     int r1 = r0 + forward;
                     int f1 = f0 + df;
@@ -777,20 +779,20 @@ void chessboard::calculateThreatSquare(pieceColor color)
     PGN* d_threatBuf;
     int* d_threatCnt;
     int maxTotal = 32 * MAX_MOVES_PER_PIECE;
-    cudaMalloc(&d_threatBuf, sizeof(PGN)*maxTotal);
-    cudaMalloc(&d_threatCnt, sizeof(int));
-    cudaMemset(d_threatCnt, 0, sizeof(int));
+    cudaMallocAsync(&d_threatBuf, sizeof(PGN)*maxTotal, str);
+    cudaMallocAsync(&d_threatCnt, sizeof(int), str);
+    cudaMemsetAsync(d_threatCnt, 0, sizeof(int), str);
 
     int threads = 32;
     int blocks  = 2;
-    calculateTheatsSq<<<blocks, threads>>>(board.getDevPointer(), d_threatBuf, d_threatCnt, color);
-    cudaDeviceSynchronize();
+    calculateTheatsSq<<<blocks, threads, 64*27*sizeof(PGN), str>>>(board.getDevPointer(), d_threatBuf, d_threatCnt, color);
+    cudaStreamSynchronize(str);
 
     int h_cnt;
-    cudaMemcpy(&h_cnt, d_threatCnt, sizeof(int), cudaMemcpyDeviceToHost);
+    cudaMemcpyAsync(&h_cnt, d_threatCnt, sizeof(int), cudaMemcpyDeviceToHost, str);
     std::vector<PGN>* targetThreat = (color == pieceColor::WHITE) ? &whiteThreatsq : &blackThreatsq;
     targetThreat->resize(h_cnt);
-    cudaMemcpy(targetThreat->data(), d_threatBuf, sizeof(PGN)*h_cnt, cudaMemcpyDeviceToHost);
+    cudaMemcpyAsync(targetThreat->data(), d_threatBuf, sizeof(PGN)*h_cnt, cudaMemcpyDeviceToHost, str);
 
     // Host에서 board의 sT 갱신
     for (int i = 0; i < 8; ++i) for (int j = 0; j < 8; ++j) board(i, j).sT = squareType::NONE;
@@ -806,7 +808,7 @@ void chessboard::calculateThreatSquare(pieceColor color)
         }
     }
 
-    board.cpyToDev();
+    board.cpyToDev(str);
     cudaFree(d_threatBuf);
     cudaFree(d_threatCnt);
 }
@@ -829,42 +831,38 @@ void chessboard::genLegalMoves() {
 
     calculateThreatSquare(pieceColor::WHITE);
     calculateThreatSquare(pieceColor::BLACK);
-    board.cpyToDev();
+    board.cpyToDev(str);
 
-    cudaMalloc(&d_moveBuf, sizeof(PGN) * maxTotal);
-    cudaMalloc(&d_moveCount, sizeof(int));
-    cudaMemset(d_moveCount, 0, sizeof(int));
+    cudaMallocAsync(&d_moveBuf, sizeof(PGN) * maxTotal, str);
+    cudaMallocAsync(&d_moveCount, sizeof(int), str);
+    cudaMallocAsync(&d_log, sizeof(PGN)*log.size(), str);
+    cudaMallocAsync(&d_logsize, sizeof(int), str);
+    cudaMallocAsync(&d_wThreat, sizeof(PGN)*whiteThreatsq.size(), str);
+    cudaMallocAsync(&d_wThreatSize, sizeof(int), str);
+    cudaMallocAsync(&d_bThreat, sizeof(PGN)*blackThreatsq.size(), str);
+    cudaMallocAsync(&d_bThreatSize, sizeof(int), str);
+    
 
-    cudaMalloc(&d_log, sizeof(PGN)*log.size());
-    cudaMemcpy(d_log, log.data(), sizeof(PGN)*log.size(), cudaMemcpyHostToDevice);
+    cudaMemsetAsync(d_moveCount, 0, sizeof(int), str);
+    cudaMemcpyAsync(d_log, log.data(), sizeof(PGN)*log.size(), cudaMemcpyHostToDevice, str);
+    cudaMemcpyAsync(d_logsize, &h_logData, sizeof(int), cudaMemcpyHostToDevice, str);
+    cudaMemcpyAsync(d_wThreat, whiteThreatsq.data(), sizeof(PGN)*whiteThreatsq.size(), cudaMemcpyHostToDevice, str);
+    cudaMemcpyAsync(d_wThreatSize, &h_wThreatSize, sizeof(int), cudaMemcpyHostToDevice, str);
+    cudaMemcpyAsync(d_bThreat, blackThreatsq.data(), sizeof(PGN)*blackThreatsq.size(), cudaMemcpyHostToDevice, str);
+    cudaMemcpyAsync(d_bThreatSize, &h_bThreatSize, sizeof(int), cudaMemcpyHostToDevice, str);
 
-    cudaMalloc(&d_logsize, sizeof(int));
-    cudaMemcpy(d_logsize, &h_logData, sizeof(int), cudaMemcpyHostToDevice);
-
-    cudaMalloc(&d_wThreat, sizeof(PGN)*whiteThreatsq.size());
-    cudaMemcpy(d_wThreat, whiteThreatsq.data(), sizeof(PGN)*whiteThreatsq.size(), cudaMemcpyHostToDevice);
-
-    cudaMalloc(&d_wThreatSize, sizeof(int));
-    cudaMemcpy(d_wThreatSize, &h_wThreatSize, sizeof(int), cudaMemcpyHostToDevice);
-
-    cudaMalloc(&d_bThreat, sizeof(PGN)*blackThreatsq.size());
-    cudaMemcpy(d_bThreat, blackThreatsq.data(), sizeof(PGN)*blackThreatsq.size(), cudaMemcpyHostToDevice);
-
-    cudaMalloc(&d_bThreatSize, sizeof(int));
-    cudaMemcpy(d_bThreatSize, &h_bThreatSize, sizeof(int), cudaMemcpyHostToDevice);
 
     int threads = 32;
     int blocks  = 2;
-    genLegalMovesKernel<<<blocks, threads>>>(board.getDevPointer(), d_moveBuf, d_moveCount, d_log, d_logsize, d_bThreat, d_bThreatSize, d_wThreat, d_wThreatSize);
-    cudaDeviceSynchronize();
+    genLegalMovesKernel<<<blocks, threads, 64*27*sizeof(PGN), str>>>(board.getDevPointer(), d_moveBuf, d_moveCount, d_log, d_logsize, d_bThreat, d_bThreatSize, d_wThreat, d_wThreatSize);
+    cudaStreamSynchronize(str);
 
     int h_count;
-    cudaMemcpy(&h_count, d_moveCount, sizeof(int), cudaMemcpyDeviceToHost);
+    cudaMemcpyAsync(&h_count, d_moveCount, sizeof(int), cudaMemcpyDeviceToHost, str);
     moveList.resize(h_count);
-    cudaMemcpy(moveList.data(), d_moveBuf, sizeof(PGN) * h_count, cudaMemcpyDeviceToHost);
+    cudaMemcpyAsync(moveList.data(), d_moveBuf, sizeof(PGN) * h_count, cudaMemcpyDeviceToHost, str);
 
     testP save_position;
-
     save_position.testboard = board;  // 보드 복원용 백업
     save_position.log = log;
 
@@ -872,15 +870,41 @@ void chessboard::genLegalMoves() {
     bool whiteInCheck = isWhiteChacked();
     bool blackInCheck = isBlackChacked();
 
+    // 현재 플레이어 결정
+    pieceColor currentPlayer = (log.size() % 2 == 0) ? pieceColor::WHITE : pieceColor::BLACK;
+
+    // ── 체크 상태가 아니라면, 빠른 핀 검사만 수행 ──
+    if (!whiteInCheck && !blackInCheck) {
+        // 체크가 아닐 때는 대부분의 수가 합법이므로 빠른 검사만
+        for (auto mv : moveList) {
+            if (mv.color != currentPlayer) continue;
+            
+            // 킹 이동은 항상 안전성 확인 필요
+            if (mv.type == pieceType::KING) {
+                updateBoard(mv);
+                calculateThreatSquare(pieceColor::WHITE);
+                calculateThreatSquare(pieceColor::BLACK);
+                
+                bool stillSafe = (mv.color == pieceColor::WHITE) ? !isWhiteChacked() : !isBlackChacked();
+                if (stillSafe) {
+                    legal_moves.push_back(mv);
+                }
+                loadPosition(save_position);
+            } else {
+                // 킹이 아닌 기물은 간단한 핀 검사만 (구현 필요)
+                legal_moves.push_back(mv);  // 임시로 모든 수를 허용
+            }
+        }
+    }
     // ── White 차례이고, 현재 White가 체크 중이라면 ──
-    if (whiteInCheck) {
+    else if (whiteInCheck) {
         for (auto mv : moveList) {
             if (mv.color != pieceColor::WHITE) continue;
 
             // (1) 한 수 두기
             updateBoard(mv);
 
-            // (2) 둔 뒤의 위협 정보를 다시 계산하고
+            // (2) 둔 뒤의 위협 정보를 다시 계산하고 (최적화 가능)
             calculateThreatSquare(pieceColor::WHITE);
             calculateThreatSquare(pieceColor::BLACK);
 
@@ -907,10 +931,6 @@ void chessboard::genLegalMoves() {
             }
             loadPosition(save_position);
         }
-    }
-    // ── 체크 상태가 아니라면, moveList 자체가 모두 합법 ──
-    else {
-        legal_moves = moveList;
     }
 
     calculateThreatSquare(pieceColor::WHITE);
@@ -978,7 +998,7 @@ void chessboard::updateBoard(const PGN &mv)
     }
 
     log.push_back(mv);
-    board.cpyToDev();
+    board.cpyToDev(str);
 }
 
 void chessboard::printBoard()
@@ -1258,5 +1278,6 @@ void debugChessboardvar(chessboard* board)
     }
     std::cout << std::endl;
 }
+
 
 

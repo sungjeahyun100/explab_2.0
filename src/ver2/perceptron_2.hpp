@@ -339,14 +339,6 @@ namespace perceptron_2 {
             double getLoss(d2::d_matrix_2<double> out, d2::d_matrix_2<double> target, LossType Loss, cudaStream_t str);
             // 손실 미분 반환
             d2::d_matrix_2<double> getGrad(d2::d_matrix_2<double> out, d2::d_matrix_2<double> target, LossType Loss, cudaStream_t str);
-            inline dim3 grid2d(int rows, int cols) {
-                return dim3(
-                  (cols + TILE-1)/TILE,   // x-direction = #tiles across columns
-                  (rows + TILE-1)/TILE    // y-direction = #tiles across rows
-                );
-            }
-    
-            inline dim3 block2d() { return dim3(TILE, TILE); }
     };
     
 

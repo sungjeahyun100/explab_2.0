@@ -294,14 +294,12 @@ namespace d_matrix_ver2{
         }
     
         void cpyToDev(cudaStream_t str = 0){
-            if(str == 0) CHECK_CUDA(cudaMemcpy(d_data, h_data.data(), row*col*sizeof(T), cudaMemcpyHostToDevice));
-            else CHECK_CUDA(cudaMemcpyAsync(d_data, h_data.data(), row*col*sizeof(T), cudaMemcpyHostToDevice, str));
+            CHECK_CUDA(cudaMemcpyAsync(d_data, h_data.data(), row*col*sizeof(T), cudaMemcpyHostToDevice, str));
             dev_valid = true;
         }
         
         void cpyToHost(cudaStream_t str = 0){
-            if(str == 0) CHECK_CUDA(cudaMemcpy(h_data.data(), d_data, row*col*sizeof(T), cudaMemcpyDeviceToHost));
-            else CHECK_CUDA(cudaMemcpyAsync(h_data.data(), d_data, row*col*sizeof(T), cudaMemcpyDeviceToHost, str));
+            CHECK_CUDA(cudaMemcpyAsync(h_data.data(), d_data, row*col*sizeof(T), cudaMemcpyDeviceToHost, str));
             host_valid = true;
         }
     
