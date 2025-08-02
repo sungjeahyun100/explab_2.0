@@ -51,11 +51,21 @@ namespace perceptron_2 {
     class handleStream{
         public:
             cudaStream_t model_str;
+            cudaStream_t optimizer_str;  // optimizer 전용 스트림 추가
+            cudaEvent_t forward_done;    // forward 완료 이벤트
+            cudaEvent_t gradient_done;   // gradient 계산 완료 이벤트
+            
             handleStream(){
                 cudaStreamCreate(&model_str);
+                cudaStreamCreate(&optimizer_str);
+                cudaEventCreate(&forward_done);
+                cudaEventCreate(&gradient_done);
             }
             ~handleStream() noexcept {
                 cudaStreamDestroy(model_str);
+                cudaStreamDestroy(optimizer_str);
+                cudaEventDestroy(forward_done);
+                cudaEventDestroy(gradient_done);
             }
     };
 
@@ -79,6 +89,8 @@ namespace perceptron_2 {
         public:
             virtual ~optimizer() = default;
             virtual void update(d2::d_matrix_2<double>& W, d2::d_matrix_2<double>& B, const d2::d_matrix_2<double>& gW, const d2::d_matrix_2<double>& gB, cudaStream_t str) = 0;
+            // 비동기 update 메서드 추가
+            virtual void updateAsync(d2::d_matrix_2<double>& W, d2::d_matrix_2<double>& B, const d2::d_matrix_2<double>& gW, const d2::d_matrix_2<double>& gB, cudaStream_t compute_str, cudaStream_t optimizer_str, cudaEvent_t gradient_ready) = 0;
     };
 
     class SGD : public optimizer {
@@ -96,6 +108,21 @@ namespace perceptron_2 {
             getErr();
             W = d2::matrixPlus(W, d2::ScalaProduct(gW_modified, -lr, str), str);
             B = d2::matrixPlus(B, d2::ScalaProduct(gB_modified, -lr, str), str);
+        }
+        
+        void updateAsync(d2::d_matrix_2<double>& W, d2::d_matrix_2<double>& B, const d2::d_matrix_2<double>& gW, const d2::d_matrix_2<double>& gB, cudaStream_t compute_str, cudaStream_t optimizer_str, cudaEvent_t gradient_ready) override {
+            // gradient 계산 완료까지 대기
+            cudaStreamWaitEvent(optimizer_str, gradient_ready, 0);
+            
+            // optimizer 스트림에서 실행
+            d2::d_matrix_2<double> gW_modified(gW.getRow(), gW.getCol(), optimizer_str);
+            d2::d_matrix_2<double> gB_modified(1, gB.getCol(), optimizer_str);
+            int gW_N = gW_modified.size();
+            int gB_N = gB_modified.size();
+            setGradThreshold<<<(gW_N + 32 -1)/32, 32, 0, optimizer_str>>>(gW.getDevPointer(), gW_modified.getDevPointer(), th, gW_N);
+            setGradThreshold<<<(gB_N + 32 -1)/32, 32, 0, optimizer_str>>>(gB.getDevPointer(), gB_modified.getDevPointer(), th, gB_N);
+            W = d2::matrixPlus(W, d2::ScalaProduct(gW_modified, -lr, optimizer_str), optimizer_str);
+            B = d2::matrixPlus(B, d2::ScalaProduct(gB_modified, -lr, optimizer_str), optimizer_str);
         }
     };
 
@@ -204,6 +231,47 @@ namespace perceptron_2 {
     
             cudaStreamSynchronize(str);
         }
+        
+        void updateAsync(d2::d_matrix_2<double>& W, d2::d_matrix_2<double>& B, const d2::d_matrix_2<double>& gW, const d2::d_matrix_2<double>& gB, cudaStream_t compute_str, cudaStream_t optimizer_str, cudaEvent_t gradient_ready) override {
+            // gradient 계산 완료까지 대기
+            cudaStreamWaitEvent(optimizer_str, gradient_ready, 0);
+            
+            ++t;
+            double bc1 = 1.0 - std::pow(beta1, t);
+            double bc2 = 1.0 - std::pow(beta2, t);
+    
+            int rows = W.getRow(), cols = W.getCol();
+            int Nw   = rows * cols;  // total weight elements
+            int Nb   = mB.getCol();         // total bias elements (1×col)
+    
+            const int blockSize = 256;
+            int gridW = (Nw + blockSize - 1) / blockSize;
+            int gridB = (Nb + blockSize - 1) / blockSize;
+    
+            // 1) weight 업데이트 (optimizer 스트림에서 실행)
+            CalcAdam<<<gridW, blockSize, 0, optimizer_str>>>(
+                gW.getDevPointer(),
+                W.getDevPointer(),
+                mW.getDevPointer(),
+                vW.getDevPointer(),
+                beta1, beta2, lr, eps,
+                bc1, bc2,
+                Nw,
+                th
+            );
+            // 2) bias 업데이트 (optimizer 스트림에서 실행)
+            CalcAdam<<<gridB, blockSize, 0, optimizer_str>>>(
+                gB.getDevPointer(),
+                B.getDevPointer(),
+                mB.getDevPointer(),
+                vB.getDevPointer(),
+                beta1, beta2, lr, eps,
+                bc1, bc2,
+                Nb,
+                th
+            );
+            // 동기화 제거 - 비동기 실행을 위해
+        }
     
         ~Adam() {}
     };
@@ -307,6 +375,48 @@ namespace perceptron_2 {
                 cudaStreamSynchronize(str);
                 return dX;
             }
+            
+            // 비동기 백프로파게이션 메서드 추가
+            d2::d_matrix_2<double> backpropAsync(const d2::d_matrix_2<double>& ext_delta, const d2::d_matrix_2<double>& act_deriv, cudaStream_t compute_str, cudaStream_t optimizer_str, cudaEvent_t gradient_ready) {
+                d2::d_matrix_2<double> grad_input = ext_delta;
+    
+                {
+                    //delta
+                    d2::HPinKernel_1dx<double><<<numberOfBlocks, threadsPerBlock, 0, compute_str>>>(grad_input.getDevPointer(), act_deriv.getDevPointer(), delta.getDevPointer(), sample_num, outputSize);
+                    getErr();
+    
+                    //dW
+                    d2::TransInKernel<double><<<grid2d(sample_num, inputSize), block2d(), 0, compute_str>>>(input.getDevPointer(), i_t.getDevPointer(), sample_num, inputSize);
+                    getErr();
+                    d2::MPinKernel<double><<<grid2d(outputSize, inputSize), block2d(), 0, compute_str>>>(i_t.getDevPointer(), delta.getDevPointer(), gradW.getDevPointer(), inputSize, outputSize, sample_num);
+                    getErr();
+                    d2::ScalainKernel<double><<<grid2d(inputSize, outputSize), block2d(), 0, compute_str>>>(gradW.getDevPointer(), 1/static_cast<double>(sample_num), gradW.getDevPointer(), inputSize, outputSize);
+                    getErr();
+    
+                    //dB
+                    d2::reduceRows<double><<<numberOfBlocks, threadsPerBlock, 0, compute_str>>>(delta.getDevPointer(), gradB.getDevPointer(), sample_num, outputSize);
+                    getErr();
+                    d2::ScalainKernel<double><<<grid2d(1, outputSize), block2d(), 0, compute_str>>>(gradB.getDevPointer(), 1/static_cast<double>(sample_num), gradB.getDevPointer(), 1, outputSize);
+                    getErr();
+                    
+                    // gradient 계산 완료 이벤트 기록
+                    cudaEventRecord(gradient_ready, compute_str);
+    
+                    //dX (다음 레이어로 전파용)
+                    int tR = weight.getCol();
+                    int tC = weight.getRow();
+                    w_t.resize(tC, tR);
+                    d2::TransInKernel<double><<<grid2d(tR, tC), block2d(), 0, compute_str>>>(weight.getDevPointer(), w_t.getDevPointer(), tR, tC);
+                    getErr();
+                    d2::MPinKernel<double><<<grid2d(inputSize, sample_num), block2d(), 0, compute_str>>>(delta.getDevPointer(), w_t.getDevPointer(), dX.getDevPointer(), sample_num, inputSize, outputSize);
+                    getErr();
+                }
+                
+                // optimizer를 비동기로 실행
+                opt->updateAsync(weight, bias, gradW, gradB, compute_str, optimizer_str, gradient_ready);
+                
+                return dX;
+            }
         
             d2::d_matrix_2<double>& getOutput(){ return output; }
     
@@ -339,14 +449,6 @@ namespace perceptron_2 {
             double getLoss(d2::d_matrix_2<double> out, d2::d_matrix_2<double> target, LossType Loss, cudaStream_t str);
             // 손실 미분 반환
             d2::d_matrix_2<double> getGrad(d2::d_matrix_2<double> out, d2::d_matrix_2<double> target, LossType Loss, cudaStream_t str);
-            inline dim3 grid2d(int rows, int cols) {
-                return dim3(
-                  (cols + TILE-1)/TILE,   // x-direction = #tiles across columns
-                  (rows + TILE-1)/TILE    // y-direction = #tiles across rows
-                );
-            }
-    
-            inline dim3 block2d() { return dim3(TILE, TILE); }
     };
     
 
@@ -739,6 +841,55 @@ namespace perceptron_2 {
       
             // 최종적으로 이전 레이어로 보낼 델타 반환
             // (already device 에 있으므로 Host 로 안 옮겨도 됩니다)
+            return dX;
+        }
+        
+        // 비동기 역전파 메서드
+        d2::d_matrix_2<double> backwardAsync(const d2::d_matrix_2<double>& dY_dev, const d2::d_matrix_2<double>& act_deriv_dev, cudaStream_t compute_str, cudaStream_t optimizer_str, cudaEvent_t gradient_ready)
+        {
+            d2::d_matrix_2<double> grad_input = dY_dev;
+            // 2) 활성화 미분 곱하기
+            int Rr=delta.getRow(), Cc=delta.getCol();
+            d2::HPinKernel_1dx<double><<<numberOfBlocks, threadsPerBlock, 0, compute_str>>>(grad_input.getDevPointer(), act_deriv_dev.getDevPointer(), delta.getDevPointer(), Rr, Cc);
+            getErr();
+      
+            // 3) gradW 계산
+            const double alpha=1.0, beta=0.0;
+            CHK_CUDNN(cudnnSetStream(_handle, compute_str));
+            CHK_CUDNN(cudnnConvolutionBackwardFilter(
+                _handle, &alpha,
+                _xDesc, input.getDevPointer(),
+                _yDesc, delta.getDevPointer(),
+                _convDesc, _bestBwdFAlgo,
+                _workspace, _workspaceBytes,
+                &beta,
+                _wDesc, gradW.getDevPointer()));
+            getErr();
+            // 4) gradB 계산
+            CHK_CUDNN(cudnnConvolutionBackwardBias(
+                _handle, &alpha,
+                _yDesc, delta.getDevPointer(),
+                &beta,
+                _biasDesc, gradB.getDevPointer()));
+            getErr();
+            
+            // gradient 계산 완료 이벤트 기록
+            cudaEventRecord(gradient_ready, compute_str);
+            
+            // 5) dX 계산 (이전 레이어로 전파할 델타)
+            CHK_CUDNN(cudnnConvolutionBackwardData(
+                _handle, &alpha,
+                _wDesc, kernel.getDevPointer(),
+                _yDesc, delta.getDevPointer(),
+                _convDesc, _bestBwdDAlgo,
+                _workspace, _workspaceBytes,
+                &beta,
+                _xDesc, dX.getDevPointer()));
+            getErr();
+            
+            // 6) 파라미터 업데이트를 비동기로 실행
+            opt->updateAsync(kernel, bias, gradW, gradB, compute_str, optimizer_str, gradient_ready);
+      
             return dX;
         }
     

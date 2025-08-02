@@ -90,28 +90,28 @@ class GOLsolver_1{
             // Get loss gradient
             auto loss_grad = loss.getGrad(final_output, target, p2::LossType::CrossEntropy, str);
             
-            // Backward through FC layers
+            // Backward through FC layers (optimizer 연산 비동기 실행)
             auto fc_out_act_deriv = act.d_Active(fc_out.getOutput(), p2::ActType::Softsign, str);
-            auto delta_fc_out = fc_out.backprop(loss_grad, fc_out_act_deriv, str);
+            auto delta_fc_out = fc_out.backpropAsync(loss_grad, fc_out_act_deriv, hs.model_str, hs.optimizer_str, hs.gradient_done);
             
             auto fc3_act_deriv = act.d_Active(fc3.getOutput(), p2::ActType::Tanh, str);
-            auto delta_fc3 = fc3.backprop(delta_fc_out, fc3_act_deriv, str);
+            auto delta_fc3 = fc3.backpropAsync(delta_fc_out, fc3_act_deriv, hs.model_str, hs.optimizer_str, hs.gradient_done);
             
             auto fc2_act_deriv = act.d_Active(fc2.getOutput(), p2::ActType::Tanh, str);
-            auto delta_fc2 = fc2.backprop(delta_fc3, fc2_act_deriv, str);
+            auto delta_fc2 = fc2.backpropAsync(delta_fc3, fc2_act_deriv, hs.model_str, hs.optimizer_str, hs.gradient_done);
             
             auto fc1_act_deriv = act.d_Active(fc1.getOutput(), p2::ActType::Tanh, str);
-            auto delta_fc1 = fc1.backprop(delta_fc2, fc1_act_deriv, str);
+            auto delta_fc1 = fc1.backpropAsync(delta_fc2, fc1_act_deriv, hs.model_str, hs.optimizer_str, hs.gradient_done);
             
-            // Backward through conv layers
+            // Backward through conv layers (optimizer 연산 비동기 실행)
             auto conv3_act_deriv = act.d_Active(conv3.getOutput(), p2::ActType::LReLU, str);
-            auto delta_conv3 = conv3.backward(delta_fc1, conv3_act_deriv, str);
+            auto delta_conv3 = conv3.backwardAsync(delta_fc1, conv3_act_deriv, hs.model_str, hs.optimizer_str, hs.gradient_done);
             
             auto conv2_act_deriv = act.d_Active(conv2.getOutput(), p2::ActType::LReLU, str);
-            auto delta_conv2 = conv2.backward(delta_conv3, conv2_act_deriv, str);
+            auto delta_conv2 = conv2.backwardAsync(delta_conv3, conv2_act_deriv, hs.model_str, hs.optimizer_str, hs.gradient_done);
             
             auto conv1_act_deriv = act.d_Active(conv1.getOutput(), p2::ActType::LReLU, str);
-            conv1.backward(delta_conv2, conv1_act_deriv, str);
+            conv1.backwardAsync(delta_conv2, conv1_act_deriv, hs.model_str, hs.optimizer_str, hs.gradient_done);
         }
 
         void train(int epochs){
@@ -149,6 +149,11 @@ class GOLsolver_1{
                 double avgloss = 0;
                 
                 for(int j = 0; j < num_batches; j++){
+                    // 이전 배치의 optimizer 작업 완료 대기 (첫 번째 배치 제외)
+                    if(j > 0) {
+                        cudaStreamSynchronize(hs.optimizer_str);
+                    }
+                    
                     // 순전파
                     auto [output, loss_val] = forward(batch_data[j], batch_labels[j], hs.model_str);
                     
@@ -170,7 +175,7 @@ class GOLsolver_1{
                         throw std::runtime_error("Invalid error in loss calc.");
                     }
                     
-                    // 역전파
+                    // 역전파 (비동기 실행)
                     backward(output, batch_labels[j], hs.model_str);
                     
                     // 배치별 loss 저장
@@ -182,8 +187,11 @@ class GOLsolver_1{
                     printProgressBar(e, epochs, start, progress_avgloss + " | " + progress_batch + " 의 " + progress_loss);
                 }
                 
+                // 마지막 배치의 optimizer 작업 완료 대기
+                cudaStreamSynchronize(hs.optimizer_str);
+                
                 avgloss = avgloss / static_cast<double>(num_batches);
-                progress_avgloss = "[epoch" + std::to_string(e+1) + "/" + std::to_string(epochs) + "의 avgloss]:" + std::to_string(avgloss);
+                progress_avgloss = "[epoch" + std::to_string(e) + "/" + std::to_string(epochs) + "의 avgloss]:" + std::to_string(avgloss);
                 
                 // Epoch별 평균 loss 저장
                 epoch_loss_file << e << " " << avgloss << std::endl;
