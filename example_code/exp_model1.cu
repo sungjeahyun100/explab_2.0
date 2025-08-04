@@ -59,25 +59,19 @@ class GOLsolver_1{
         std::pair<d2::d_matrix_2<double>, double> forward(d2::d_matrix_2<double> X, d2::d_matrix_2<double> target, cudaStream_t str = 0){
             // Conv layers with activation
             conv1.forward(X, str);
-            auto conv1_activated = act.Active(conv1.getOutput(), p2::ActType::LReLU, str);
             
-            conv2.forward(conv1_activated, str);
-            auto conv2_activated = act.Active(conv2.getOutput(), p2::ActType::LReLU, str);
+            conv2.forward(act.Active(conv1.getOutput(), p2::ActType::LReLU, str), str);
             
-            conv3.forward(conv2_activated, str);
-            auto conv3_activated = act.Active(conv3.getOutput(), p2::ActType::LReLU, str);
+            conv3.forward(act.Active(conv2.getOutput(), p2::ActType::LReLU, str), str);
             
             // FC layers with activation
-            fc1.feedforward(conv3_activated, str);
-            auto fc1_activated = act.Active(fc1.getOutput(), p2::ActType::Tanh, str);
+            fc1.feedforward(act.Active(conv3.getOutput(), p2::ActType::LReLU, str), str);
             
-            fc2.feedforward(fc1_activated, str);
-            auto fc2_activated = act.Active(fc2.getOutput(), p2::ActType::Tanh, str);
+            fc2.feedforward(act.Active(fc1.getOutput(), p2::ActType::Tanh, str), str);
             
-            fc3.feedforward(fc2_activated, str);
-            auto fc3_activated = act.Active(fc3.getOutput(), p2::ActType::Tanh, str);
+            fc3.feedforward(act.Active(fc2.getOutput(), p2::ActType::Tanh, str), str);
             
-            fc_out.feedforward(fc3_activated, str);
+            fc_out.feedforward(act.Active(fc3.getOutput(), p2::ActType::Tanh, str), str);
             auto final_output = act.Active(fc_out.getOutput(), p2::ActType::Softsign, str);
             
             // Loss calculation  

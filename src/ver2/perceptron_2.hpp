@@ -35,7 +35,8 @@ namespace perceptron_2 {
         Sigmoid,
         Softplus,
         Softsign,
-        Swish
+        Swish,
+        Softmax
     };
     
     enum class LossType {
@@ -91,9 +92,7 @@ namespace perceptron_2 {
             int gW_N = gW_modified.size();
             int gB_N = gB_modified.size();
             setGradThreshold<<<(gW_N + 32 -1)/32, 32, 0, str>>>(gW.getDevPointer(), gW_modified.getDevPointer(), th, gW_N);
-            getErr();
             setGradThreshold<<<(gB_N + 32 -1)/32, 32, 0, str>>>(gB.getDevPointer(), gB_modified.getDevPointer(), th, gB_N);
-            getErr();
             W = d2::matrixPlus(W, d2::ScalaProduct(gW_modified, -lr, str), str);
             B = d2::matrixPlus(B, d2::ScalaProduct(gB_modified, -lr, str), str);
         }
@@ -188,7 +187,7 @@ namespace perceptron_2 {
                 Nw,
                 th
             );
-            getErr();
+            
             // 2) bias 업데이트 (이제 B는 1×col 이므로 N_B = cols)
             CalcAdam<<<gridB, blockSize, 0, str>>>(
                 gB.getDevPointer(),
@@ -200,7 +199,6 @@ namespace perceptron_2 {
                 Nb,
                 th
             );
-            getErr();
     
             cudaStreamSynchronize(str);
         }
@@ -229,10 +227,12 @@ namespace perceptron_2 {
             d2::d_matrix_2<double> gradW;
             d2::d_matrix_2<double> gradB;
             optimizer* opt;
+
             int deviceId;
             cudaDeviceProp props;
             size_t threadsPerBlock;
             size_t numberOfBlocks;
+            
             d2::d_matrix_2<double> w_t;
             d2::d_matrix_2<double> i_t;
             d2::d_matrix_2<double> dX;
@@ -246,6 +246,8 @@ namespace perceptron_2 {
             }
     
             inline dim3 block2d() { return dim3(TILE, TILE); }
+
+            PerceptronLayer() {}//빈 layer생성자.
     
             PerceptronLayer(int n, int i, int o, optimizer* optimizer, d2::InitType init, cudaStream_t str)
                 : inputSize(i), outputSize(o), sample_num(n),
@@ -265,9 +267,7 @@ namespace perceptron_2 {
             void feedforward(const d2::d_matrix_2<double>& in, cudaStream_t str) {
                 input = in;
                 d2::MPinKernel<double><<<grid2d(outputSize, sample_num), block2d(), 0, str>>>(input.getDevPointer(), weight.getDevPointer(), output.getDevPointer(), sample_num, outputSize, inputSize);//2^5, 2^5, 2개
-                getErr();
                 addBias<<<numberOfBlocks, threadsPerBlock, 0, str>>>(output.getDevPointer(), bias.getDevPointer(), output.getDevPointer(), sample_num, outputSize); 
-                getErr();
                 cudaStreamSynchronize(str);
                 
             }
@@ -278,30 +278,26 @@ namespace perceptron_2 {
                 {
                     //delta
                     d2::HPinKernel_1dx<double><<<numberOfBlocks, threadsPerBlock, 0, str>>>(grad_input.getDevPointer(), act_deriv.getDevPointer(), delta.getDevPointer(), sample_num, outputSize);
-                    getErr();
+
     
                     //dW
                     d2::TransInKernel<double><<<grid2d(sample_num, inputSize), block2d(), 0, str>>>(input.getDevPointer(), i_t.getDevPointer(), sample_num, inputSize);
-                    getErr();
                     d2::MPinKernel<double><<<grid2d(outputSize, inputSize), block2d(), 0, str>>>(i_t.getDevPointer(), delta.getDevPointer(), gradW.getDevPointer(), inputSize, outputSize, sample_num);
-                    getErr();
                     d2::ScalainKernel<double><<<grid2d(inputSize, outputSize), block2d(), 0, str>>>(gradW.getDevPointer(), 1/static_cast<double>(sample_num), gradW.getDevPointer(), inputSize, outputSize);
-                    getErr();
+
     
                     //dB
                     d2::reduceRows<double><<<numberOfBlocks, threadsPerBlock, 0, str>>>(delta.getDevPointer(), gradB.getDevPointer(), sample_num, outputSize);
-                    getErr();
                     d2::ScalainKernel<double><<<grid2d(1, outputSize), block2d(), 0, str>>>(gradB.getDevPointer(), 1/static_cast<double>(sample_num), gradB.getDevPointer(), 1, outputSize);
-                    getErr();
+
     
                     //dX
                     int tR = weight.getCol();
                     int tC = weight.getRow();
                     w_t.resize(tC, tR);
                     d2::TransInKernel<double><<<grid2d(tR, tC), block2d(), 0, str>>>(weight.getDevPointer(), w_t.getDevPointer(), tR, tC);
-                    getErr();
                     d2::MPinKernel<double><<<grid2d(inputSize, sample_num), block2d(), 0, str>>>(delta.getDevPointer(), w_t.getDevPointer(), dX.getDevPointer(), sample_num, inputSize, outputSize);
-                    getErr();
+
                 }
                 opt->update(weight, bias, gradW, gradB, str);
                 cudaStreamSynchronize(str);
@@ -366,6 +362,8 @@ namespace perceptron_2 {
                 return d2::MatrixActivate<double, d2::Softsign>(z, str); break;
             case ActType::Swish:
                 return d2::MatrixActivate<double, d2::Swish>(z, str); break;
+            case ActType::Softmax:
+                return d2::softmax_efficient<double>(z, str);
             default:
                 throw std::runtime_error("Unsupported ActivationType in perceptronLayer");
         }
@@ -398,6 +396,10 @@ namespace perceptron_2 {
                 return d2::MatrixActivate<double, d2::d_Softsign>(z, str);
             case ActType::Swish:
                 return d2::MatrixActivate<double, d2::d_Swish>(z, str);
+            case ActType::Softmax:
+                // Softmax derivative is handled differently in practice
+                // For simplicity, return identity matrix
+                return d2::MatrixActivate<double, d2::d_I>(z, str);
             default:
                 throw std::runtime_error("Unsupported ActivationType in d_Active");
         }
@@ -471,7 +473,6 @@ namespace perceptron_2 {
                 auto idx_end   = thrust::make_counting_iterator(N);
 
                 getCrossEntropyLossInKernel<<<N, 512, 0, str>>>(p_ptr, t_ptr, N, C, out_ptr);
-                getErr();
 
                 double sum = thrust::transform_reduce(
                     thrust::cuda_cub::par.on(str),
@@ -547,6 +548,9 @@ namespace perceptron_2 {
         optimizer* opt;
     
       public:
+        
+        convLayer(){}//빈 layer생성자.
+
         convLayer(int N_, int C_, int H_, int W_,
                   int K_, int R_, int S_,
                   int pad_h_, int pad_w_,
@@ -671,14 +675,12 @@ namespace perceptron_2 {
                 _convDesc, _bestAlgo,
                 _workspace, _workspaceBytes,
                 &beta,    _yDesc, output.getDevPointer()));
-            getErr();
             // 3) bias 추가
             CHK_CUDNN(cudnnAddTensor(
                 _handle, &alpha,
                 _biasDesc, bias.getDevPointer(),
                 &alpha,
                 _yDesc, output.getDevPointer()));
-            getErr();
             // 동기화 제거 - 스트림을 사용하므로 불필요
             return output;  // (N × K×Ho×Wo)
         }
@@ -692,7 +694,6 @@ namespace perceptron_2 {
             // 2) 활성화 미분 곱하기
             int Rr=delta.getRow(), Cc=delta.getCol();
             d2::HPinKernel_1dx<double><<<numberOfBlocks, threadsPerBlock, 0, str>>>(grad_input.getDevPointer(), act_deriv_dev.getDevPointer(), delta.getDevPointer(), Rr, Cc);
-            getErr();
       
             // 3) gradW 계산
             const double alpha=1.0, beta=0.0; // alpha를 1.0으로 변경 (gradient scaling 완화)
@@ -705,7 +706,6 @@ namespace perceptron_2 {
                 _workspace, _workspaceBytes,
                 &beta,
                 _wDesc, gradW.getDevPointer()));
-            getErr();
             // 4) gradB 계산
             CHK_CUDNN(cudnnSetStream(_handle, str));
             CHK_CUDNN(cudnnConvolutionBackwardBias(
@@ -713,7 +713,6 @@ namespace perceptron_2 {
                 _yDesc, delta.getDevPointer(),
                 &beta,
                 _biasDesc, gradB.getDevPointer()));
-            getErr();
             // 5) dX 계산 (이전 레이어로 전파할 델타)
             CHK_CUDNN(cudnnSetStream(_handle, str));
             CHK_CUDNN(cudnnConvolutionBackwardData(
@@ -724,7 +723,6 @@ namespace perceptron_2 {
                 _workspace, _workspaceBytes,
                 &beta,
                 _xDesc, dX.getDevPointer()));
-            getErr();
             // 6) 파라미터 업데이트
             opt->update(kernel, bias, gradW, gradB, str);
             // 동기화 제거 - 스트림을 사용하므로 불필요

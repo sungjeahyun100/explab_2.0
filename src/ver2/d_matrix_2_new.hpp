@@ -389,8 +389,8 @@ namespace d_matrix_ver2{
     
     // Zero padding
     template<typename T>
-    __global__ void zeroPad(const T *d_A, T *d_C, int row, int col, int c_row, int c_col);
-
+    __global__ void zeroPad(T *d_A, T *d_C, int row, int col, int c_row, int c_col);
+    
     template <typename T>
     d_matrix_2<T> zeroPedding(const d_matrix_2<T> &d_A, int size, cudaStream_t str = 0);
     
